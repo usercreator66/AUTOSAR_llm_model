@@ -1,0 +1,10 @@
+{ 
+   "autosar_dataset": {
+    "file_name": "AR_R2511_train.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output"
+    }
+  }
+}

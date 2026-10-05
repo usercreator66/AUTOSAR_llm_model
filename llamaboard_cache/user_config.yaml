@@ -1,0 +1,7 @@
+cache_dir: null
+hub_name: huggingface
+lang: en
+last_model: Qwen3.5-9B-Base
+path_dict:
+  Qwen3.5-9B-Base: F:\Visual_studio_workspace\AUTOSAR_Agent\models\Qwen3.5-9B
+  Qwen3.5-9B-Thinking: F:/Visual_studio_workspace/AUTOSAR_Agent/models/Qwen3.5-9B

@@ -1,0 +1,32 @@
+[
+  {
+    "instruction": "Design a small AUTOSAR cybersecurity utility in MISRA-C style that safely adds two uint8 values without wrapping.",
+    "input": "The function shall saturate at UINT8_MAX, have no dynamic memory allocation, and return a deterministic result for every input.",
+    "output": "#include <stdint.h>\n\nuint8_t Autosar_SafeAddU8(uint8_t left, uint8_t right)\n{\n    if (right > (uint8_t)(UINT8_MAX - left)) {\n        return UINT8_MAX;\n    }\n\n    return (uint8_t)(left + right);\n}"
+  },
+  {
+    "instruction": "Generate an AUTOSAR software component specification for a vehicle speed monitor that raises OverspeedWarning above 100 km/h.",
+    "input": "Use one periodic runnable named VehicleSpeedMonitor_Run with a 10 ms period. The input is VehicleSpeed in km/h and the output is a boolean OverspeedWarning.",
+    "output": "SWC: VehicleSpeedMonitor\n\nPorts:\n  RequiredData:\n    - VehicleSpeed: uint16, km/h\n  ProvidedData:\n    - OverspeedWarning: boolean\n\nRunnable:\n  Name: VehicleSpeedMonitor_Run\n  Trigger: TimingEvent\n  Period: 10 ms\n\nBehavior:\n  if VehicleSpeed > 100\n      OverspeedWarning = TRUE\n  else\n      OverspeedWarning = FALSE\n\nRequirements:\n  - The runnable shall update OverspeedWarning on every activation.\n  - A speed of exactly 100 km/h shall not trigger the warning."
+  },
+  {
+    "instruction": "Create an AUTOSAR SWC specification for a brake pedal status component.",
+    "input": "Read BrakePedalPosition as a percentage from 0 to 100. Set BrakeApplied to TRUE at or above 5 percent. Reject values above 100 percent by reporting an invalid input status.",
+    "output": "SWC: BrakePedalMonitor\n\nPorts:\n  RequiredData:\n    - BrakePedalPosition: uint8, percent\n  ProvidedData:\n    - BrakeApplied: boolean\n    - BrakePedalInputValid: boolean\n\nRunnable:\n  Name: BrakePedalMonitor_Run\n  Trigger: TimingEvent\n  Period: 10 ms\n\nBehavior:\n  if BrakePedalPosition > 100\n      BrakePedalInputValid = FALSE\n      BrakeApplied = FALSE\n  else\n      BrakePedalInputValid = TRUE\n      BrakeApplied = (BrakePedalPosition >= 5)"
+  },
+  {
+    "instruction": "Generate AUTOSAR diagnostic behavior for a coolant over-temperature monitor.",
+    "input": "CoolantTemperature is an int16 value in degrees Celsius. Set DTC_CoolantOverTemperature when the temperature is above 120 degrees for three consecutive 100 ms samples. Clear the pending counter when the temperature returns to 120 or below.",
+    "output": "SWC: CoolantTemperatureMonitor\n\nInput:\n  CoolantTemperature: int16, degrees Celsius\n\nDiagnosticEvent:\n  Name: DTC_CoolantOverTemperature\n  Debounce: 3 consecutive failed samples\n  SamplePeriod: 100 ms\n\nRunnable:\n  CoolantTemperatureMonitor_Run\n\nLogic:\n  if CoolantTemperature > 120\n      OverTemperatureCounter = OverTemperatureCounter + 1\n  else\n      OverTemperatureCounter = 0\n\n  if OverTemperatureCounter >= 3\n      ReportDiagnosticEvent(DTC_CoolantOverTemperature, FAILED)\n  else\n      ReportDiagnosticEvent(DTC_CoolantOverTemperature, PASSED)"
+  },
+  {
+    "instruction": "Define an AUTOSAR CAN signal handling specification for a vehicle speed signal.",
+    "input": "The signal VehicleSpeedRaw is uint16, has a factor of 0.01 km/h per bit, and is received in CAN message VehicleStatus every 20 ms. A timeout after 100 ms shall mark the signal invalid and use a safe value of zero.",
+    "output": "Signal: VehicleSpeed\n\nNetwork:\n  Message: VehicleStatus\n  CycleTime: 20 ms\n  Timeout: 100 ms\n\nConversion:\n  RawType: uint16\n  PhysicalType: float32\n  Factor: 0.01 km/h per bit\n  Offset: 0.0 km/h\n\nRunnable:\n  VehicleSpeed_Update\n\nBehavior:\n  on VehicleStatus received\n      VehicleSpeed = VehicleSpeedRaw * 0.01\n      VehicleSpeedValid = TRUE\n      ResetTimeoutTimer()\n\n  on timeout\n      VehicleSpeed = 0.0\n      VehicleSpeedValid = FALSE"
+  },
+  {
+    "instruction": "Create an AUTOSAR watchdog supervision specification for a periodic application runnable.",
+    "input": "The runnable PowertrainControl_Run is expected every 10 ms. It must complete within 5 ms. Report a supervision failure after two consecutive missed or late executions.",
+    "output": "SWC: PowertrainControl\n\nRunnable:\n  Name: PowertrainControl_Run\n  ExpectedPeriod: 10 ms\n  MaximumExecutionTime: 5 ms\n\nWatchdogSupervision:\n  Type: Alive and deadline supervision\n  AllowedMissedExecutions: 1\n  FailureThreshold: 2 consecutive violations\n\nBehavior:\n  - Start execution monitoring when PowertrainControl_Run begins.\n  - Stop execution monitoring when PowertrainControl_Run completes.\n  - Report WdgM_LocalStatus as OK for valid executions.\n  - Report WdgM_LocalStatus as FAILED after two consecutive period or deadline violations."
+  }
+]
