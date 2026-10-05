@@ -6,4 +6,5 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 numpy>=1.26.0
 pypdf>=5.0.0
+fonttools>=4.50.0
 llama-cpp-python>=0.3.8

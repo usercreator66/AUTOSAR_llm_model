@@ -11,6 +11,7 @@ import sys
 import argparse
 from dotenv import load_dotenv
 from llm_client import query_llm
+from autosar_spec_engine import AutosarSpecEngine
 
 load_dotenv()
 
@@ -83,11 +84,16 @@ def generate_c_code(
     Generates strict C source code from a requirement and writes a clean .c file.
     """
     system_prompt = (
-        "code generator in C language with syntax"
+        "You are an AUTOSAR C code generator. Use retrieved specification evidence "
+        "when relevant, and do not invent normative AUTOSAR requirements."
     )
+    spec_context = AutosarSpecEngine().build_context(requirement)
 
     prompt = f"""Requirement:
 {requirement}
+
+AUTOSAR SPECIFICATION EVIDENCE:
+{spec_context}
 
 """
 

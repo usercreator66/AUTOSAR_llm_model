@@ -1083,6 +1083,7 @@ def generate(
     autosar_version: str,
 ) -> str:
     from llm_client import LLMClient
+    from autosar_spec_engine import AutosarSpecEngine
 
     if output_format not in OUTPUT_FORMATS:
         raise ValueError("Unknown output format.")
@@ -1107,6 +1108,8 @@ def generate(
 - If a header file is requested, output only valid C header syntax without explanatory text."""
         system_prompt = "You are an AUTOSAR embedded C code generator. Return only compilable C or header syntax. Never add Markdown, bullet lists, or explanations."
 
+    spec_query = "\n\n".join(part for part in (prompt, requirements, expected_outputs) if part.strip())
+    spec_context = AutosarSpecEngine().build_context(spec_query)
     full_prompt = f"""{prompt.strip()}
 
 AUTOSAR VERSION:
@@ -1117,6 +1120,9 @@ REQUIREMENTS:
 
 EXPECTED OUTPUT CONTRACT:
 {expected_outputs}
+
+AUTOSAR SPECIFICATION EVIDENCE:
+{spec_context}
 
 OUTPUT RULES:
 - Treat the expected output contract as the format to reproduce and improve.

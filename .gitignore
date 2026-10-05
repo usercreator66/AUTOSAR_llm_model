@@ -40,6 +40,9 @@ env/
 *.swp
 *.swo
 *~
-/autosar_spec
+/autosar_spec/adaptive_autosar_R25_11
+/autosar_spec/classic_autosar_R25_11
 /models
 /saves
+data/stack_file_unlabeled.json
+autosar_spec/.autosar_spec_index.sqlite3

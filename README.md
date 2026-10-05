@@ -71,34 +71,44 @@ python generate_c.py "Create a safe MISRA-C circular buffer queue for CAN messag
 
 ---
 
-### 4. Extract Structured AUTOSAR SWC Specifications
+### 4. Generate Platform-Specific AUTOSAR Source
 
-Transform natural language automotive requirements into structured AUTOSAR specifications:
+Generate C for AUTOSAR Classic or C++ for AUTOSAR Adaptive. Retrieved specification passages are filtered to the selected platform and included in the model prompt:
 
 ```powershell
-# Default requirement (Vehicle speed monitor)
+# Classic Platform C (default)
 python generate_spec.py
 
-# Custom requirement
-python generate_spec.py "Create an ECU component that monitors battery voltage and triggers a shutdown flag if voltage drops below 9V for more than 500ms"
+# Adaptive Platform C++
+python generate_spec.py --platform adaptive "Implement a service that monitors battery voltage"
 ```
 
-Example structured output:
-```text
-SWC: SpeedMonitor_SWC
+Generated filenames use the AUTOSAR component as a prefix, for example `output/CanIf_classic.c` or `output/AdaptiveService_adaptive.cpp`. Component names are inferred from CamelCase names in the requirement; set `--component` when the name is ambiguous. Custom `--output` paths also receive the component prefix if it is missing. The default requirement names its component `VehicleSpeedMonitor`.
 
-Input:
-  VehicleSpeed
+The earlier text-only SWC specification helper remains available to Python callers as `generate_swc_spec()`.
 
-Output:
-  SpeedExceededWarning
-
-Runnable:
-  re_MonitorVehicleSpeed
-
-Logic:
-  if VehicleSpeed > 100
-      SpeedExceededWarning = TRUE
-  else
-      SpeedExceededWarning = FALSE
+```powershell
+python generate_spec.py --platform classic --component SpeedMonitor --output output/SpeedMonitor.c "Implement a speed monitor SWC: input VehicleSpeed, output SpeedExceededWarning, set the output when speed exceeds 100 km/h"
 ```
+
+    ## AUTOSAR Specification Retrieval
+
+    Generation uses retrieval-augmented inference, not model fine-tuning. Before a
+    generation request, the engine searches extracted specification passages and
+    adds the best matches to the model prompt. The GUI C/header/ARXML generator,
+    the standalone C generator, and the SWC specification generator all use this
+    context.
+
+    The local SQLite FTS5 index is stored at
+    `autosar_spec/.autosar_spec_index.sqlite3`. It is built from PDFs under
+    `autosar_spec/classic_autosar_R25_11` and
+    `autosar_spec/adaptive_autosar_R25_11`; new or changed PDFs are indexed
+    incrementally. To search the index manually or force a full reindex:
+
+    ```powershell
+    python autosar_spec_engine.py "CanIf controller" --platform classic
+    python autosar_spec_engine.py "CanIf controller" --reindex
+    ```
+
+    Retrieved passages include source and page details. If no relevant passage is
+    found, the prompt directs the model not to invent normative AUTOSAR requirements.
