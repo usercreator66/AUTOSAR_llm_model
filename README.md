@@ -40,6 +40,8 @@ AUTOSAR_LLM/
 Use the local project environment to run the workflow, validate the model, and generate AUTOSAR-related outputs.
 
 The model is based on Qwen3.5 9B trained with autosar and is used locally.
+
+![Generation mapping](./images/design.png)
 ---
 
 ## AUTOSAR Specification Retrieval
@@ -52,7 +54,7 @@ The AUTOSAR R25_11 standard is used as the source context for generation and ret
 
 For interactive use, a generative chat workflow is available to provide input and review model output with option to add file.
 
-![AUTOSAR chat interface](./chat.png)
+![AUTOSAR chat interface](./images/chat.png)
 
 ## Code generation with specification
 
