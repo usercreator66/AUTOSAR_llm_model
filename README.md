@@ -16,21 +16,7 @@ Highlights:
 ## Project Structure
 
 ```
-AUTOSAR_LLM/
-├── models/
-├── .env
-├── .gitignore
-├── requirements.txt
-├── local_engine.py
-├── llm_client.py
-├── main.py
-├── generate_c.py
-├── generate_spec.py
-├── autosar_spec/
-├── saves/
-├── output/
-├── tests/
-└── README.md
+![alt text](image.png)
 ```
 
 ---
