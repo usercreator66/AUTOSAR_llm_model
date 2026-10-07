@@ -60,3 +60,26 @@ def test_search_returns_empty_for_unmatched_platform(tmp_path, monkeypatch):
     engine = AutosarSpecEngine(spec_root=spec_root)
 
     assert engine.search("CanIf controller", platform="adaptive") == []
+
+
+def test_search_filters_by_document_type_and_selected_source(tmp_path, monkeypatch):
+    spec_root = tmp_path / "autosar_spec"
+    pdf_dir = spec_root / "adaptive_autosar_R25_11"
+    pdf_dir.mkdir(parents=True)
+    exp_path = pdf_dir / "AUTOSAR_AP_EXP_CommunicationManagement.pdf"
+    rs_path = pdf_dir / "AUTOSAR_AP_RS_CommunicationManagement.pdf"
+    sws_path = pdf_dir / "AUTOSAR_AP_SWS_CommunicationManagement.pdf"
+    for path in (exp_path, rs_path, sws_path):
+        path.write_bytes(b"fake pdf")
+    monkeypatch.setitem(sys.modules, "pypdf", SimpleNamespace(PdfReader=FakePdfReader))
+
+    engine = AutosarSpecEngine(spec_root=spec_root)
+    results = engine.search(
+        "CanIf controller",
+        platform="adaptive",
+        document_types=("RS",),
+        sources=(rs_path.name,),
+    )
+
+    assert len(results) == 1
+    assert results[0].source == "adaptive_autosar_R25_11/AUTOSAR_AP_RS_CommunicationManagement.pdf"

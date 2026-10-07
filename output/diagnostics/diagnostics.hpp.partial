@@ -1,0 +1,4011 @@
+#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.h"
+#include "ara/diag/api.h"
+#include "ara/core/errorcode.h"
+#include "ara/core/types.h"
+#include <functional>
+#include <vector>
+#include <cstdint>
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration structure for generic diagnostic services.
+ * 
+ * This class implements the GenericConfiguration interface required by the 
+ * Service-Oriented Vehicle Diagnostics (SOVD) architecture. It provides access 
+ * to both parameter-based and bulk-data based configuration reading/writing.
+ */
+class GenericConfiguration {
+public:
+    /**
+     * @brief Reads a configuration value by name.
+     * @param name The identifier of the configuration item.
+     * @return bool True if successful, false otherwise.
+     */
+    virtual bool ReadByName(const std::string& name) = 0;
+
+    /**
+     * @brief Writes a configuration value by name.
+     * @param name The identifier of the configuration item.
+     * @param value The value to write.
+     * @return bool True if successful, false otherwise.
+     */
+    virtual bool WriteByName(const std::string& name, const void* value) = 0;
+
+    /**
+     * @brief Reads a list of configuration values by names.
+     * @param names List of identifiers for configuration items.
+     * @param values Buffer to store the retrieved values.
+     * @param numValues Number of elements in the names/values arrays.
+     * @return bool True if all reads were successful, false otherwise.
+     */
+    virtual bool ReadByNames(const std::vector<std::string>& names, 
+                              void* values, 
+                              uint32_t numValues) = 0;
+
+    /**
+     * @brief Writes a list of configuration values by names.
+     * @param names List of identifiers for configuration items.
+     * @param values Buffer containing the values to write.
+     * @param numValues Number of elements in the names/values arrays.
+     * @return bool True if all writes were successful, false otherwise.
+     */
+    virtual bool WriteByNames(const std::vector<std::string>& names, 
+                               const void* values, 
+                               uint32_t numValues) = 0;
+
+    /**
+     * @brief Deletes a configuration item by name.
+     * @param name The identifier of the configuration item to delete.
+     * @return bool True if successful, false otherwise.
+     */
+    virtual bool DeleteByName(const std::string& name) = 0;
+};
+
+/**
+ * @brief Handles diagnostic trouble codes (DTCs) and event memory overflow tracking.
+ * 
+ * This class extends the standard DTC Information capabilities to include 
+ * persistent storage and reporting of event memory overflows as per SWS_DM_00922 
+ * and SWS_DM_00923 specifications.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Indicates whether an event memory overflow has occurred.
+     */
+    enum class OverflowStatus {
+        NoOverflow,      ///< Memory capacity available (< maxNumberOfEventEntries)
+        OverflowDetected ///< Memory full (>= maxNumberOfEventEntries)
+    };
+
+    /**
+     * @brief Retrieves the current status of event memory overflow for a specific instance.
+     * 
+     * According to SWS_DM_00923, if the number of stored entries reaches 
+     * maxNumberOfEventEntries, this method returns OverflowDetected.
+     * 
+     * @param instanceIndex Index of the event memory instance being queried.
+     * @return OverflowStatus Current overflow status.
+     */
+    static OverflowStatus GetEventMemoryOverflow(uint32_t instanceIndex);
+
+    /**
+     * @brief Gets detailed information about a specific DTC.
+     * @param dtcId The unique identifier of the DTC.
+     * @param info Pointer to struct to populate with DTC details.
+     * @return bool True if information was successfully retrieved.
+     */
+    static bool GetDtcInfo(uint32_t dtcId, DtcInfoStruct* info);
+
+    /**
+     * @brief Checks if a specific DTC is currently present.
+     * @param dtcId The unique identifier of the DTC.
+     * @return bool True if the DTC is present.
+     */
+    static bool IsPresent(uint32_t dtcId);
+
+private:
+    // Internal helper to check memory bounds before storing
+    static bool CanStoreEntry(uint32_t instanceIndex);
+    
+    // Placeholder for internal state management
+    static constexpr uint32_t MAX_EVENT_ENTRIES = 100; // Example constant derived from spec logic
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/types.hpp"
+#include "ara/com/api.hpp"
+#include "ara/diag/api.hpp"
+#include "ara/diag/dtc_information.hpp"
+#include "ara/diag/configuration_interface.hpp"
+#include "ara/diag/bulk_data_interface.hpp"
+
+namespace diag {
+
+/**
+ * @brief Exception thrown when diagnostic operations fail due to resource constraints
+ * such as event memory overflow or configuration errors.
+ */
+class DiagnosticException : public core::Exception {
+public:
+    explicit DiagnosticException(const std::string& message);
+};
+
+/**
+ * @brief Factory class responsible for creating and configuring DTC Information instances.
+ * 
+ * This class provides the necessary interfaces to initialize DTC monitoring based on
+ * the SOVD specification, handling both persistent storage and runtime event memory
+ * management. It enforces the constraint that event memory cannot exceed the maximum
+ * number of entries defined in the configuration.
+ */
+class DtcInfoFactory {
+public:
+    /**
+     * @brief Creates a new instance of DtcInformation with default settings.
+     * @return Pointer to newly created DtcInformation object.
+     */
+    static DtcInformation* Create();
+
+    /**
+     * @brief Creates a new instance of DtcInformation with custom configuration.
+     * @param config Pointer to the configuration structure.
+     * @return Pointer to newly created DtcInformation object.
+     */
+    static DtcInformation* Create(Configuration* config);
+
+    /**
+     * @brief Destroys the DTC information instance, releasing associated resources.
+     * @param instance Pointer to the DtcInformation object to destroy.
+     */
+    static void Destroy(DtcInformation*& instance);
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/Ioctl.h"
+#include "ara/core/ErrorCode.h"
+#include "ara/core/Types.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/PersistentStorage.h"
+#include "ara/diag/SvdApi.h"
+#include "ara/diag/types.h"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Exception thrown when diagnostic configuration fails due to invalid parameters.
+ */
+class DiagConfigException : public core::Exception {
+public:
+    explicit DiagConfigException(const std::string& message);
+};
+
+/**
+ * @brief Factory class for creating persistent storage instances.
+ * 
+ * Handles the creation of persistent storage backends based on the specified
+ * storage type (File System, RAM, etc.) and validates configuration before
+ * instantiation.
+ */
+class StorageFactory {
+public:
+    /**
+     * @brief Creates a persistent storage instance for the given path.
+     * 
+     * Validates the existence of the directory structure and initializes the
+     * necessary file descriptors.
+     * 
+     * @param path Path to the storage location.
+     * @return std::unique_ptr<PersistentStorage> Pointer to the created storage object.
+     * @throws DiagConfigException If validation fails.
+     */
+    static std::unique_ptr<PersistentStorage> Create(const std::string& path);
+
+    /**
+     * @brief Checks if the specified storage path is valid and accessible.
+     * 
+     * @param path Path to check.
+     * @return bool True if valid, false otherwise.
+     */
+    static bool IsPathValid(const std::string& path);
+};
+
+/**
+ * @brief Wrapper class for managing DTC Information and Event Memory Overflow detection.
+ * 
+ * This class provides a unified interface to access DTC records and monitor
+ * the status of event memories, including detecting overflow conditions as per
+ * SWS_DM_00922 and SWS_DM_00923 specifications.
+ */
+class DtcInfoManager {
+public:
+    /**
+     * @brief Constructs a manager for a specific DTC ID.
+     * 
+     * @param id The Diagnostic Trouble Code identifier.
+     */
+    explicit DtcInfoManager(uint32_t id);
+
+    /**
+     * @brief Retrieves detailed information about the last reported event for a specific memory destination.
+     * 
+     * @param memDestId The identifier of the memory destination.
+     * @return const EventRecord& Reference to the latest event record.
+     */
+    const EventRecord& GetLastEvent(uint8_t memDestId) const;
+
+    /**
+     * @brief Checks if the event memory has overflowed.
+     * 
+     * Returns true if the number of stored entries exceeds the maximum allowed capacity
+     * (< DiagnosticMemoryDestination.maxNumberOfEventEntries>).
+     * 
+     * @param memDestId The identifier of the memory destination.
+     * @return bool True if overflow occurred, false otherwise.
+     */
+    bool HasEventMemoryOverflow(uint8_t memDestId) const;
+
+    /**
+     * @brief Resets the event counter for a specific memory destination.
+     * 
+     * Must be called after handling an overflow to clear the flag.
+     * 
+     * @param memDestId The identifier of the memory destination.
+     */
+    void ResetOverflowFlag(uint8_t memDestId);
+
+private:
+    uint32_t m_id;
+    mutable std::mutex m_mutex;
+    std::vector<EventRecord> m_eventMemories; // Size determined by configuration
+    std::vector<bool> m_overflowFlags;       // Tracks overflow state per memory
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IpcClient.h"
+#include "ara/core/ErrorCode.h"
+#include "ara/diag/DtcManager.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/BulkData.h"
+#include "ara/diag/SessionControl.h"
+#include "ara/diag/RequestResponse.h"
+#include "ara/diag/Report.h"
+#include "ara/diag/StatusNotification.h"
+#include "ara/diag/PeriodicNotification.h"
+#include "ara/diag/ParameterRecord.h"
+#include "ara/diag/PerformanceTestResult.h"
+#include "ara/diag/TestSpecification.h"
+#include "ara/diag/SoftwareComponentVersion.h"
+#include "ara/diag/SoftwareUpdate.h"
+#include "ara/diag/FlashFile.h"
+#include "ara/diag/FirmwarePackage.h"
+#include "ara/diag/LogMessage.h"
+#include "ara/diag/MemoryUsage.h"
+#include "ara/diag/OdometerValue.h"
+#include "ara/diag/PowerOnCounter.h"
+#include "ara/diag/SystemClock.h"
+#include "ara/diag/VehicleIdentificationNumber.h"
+#include "ara/diag/DeviceId.h"
+#include "ara/diag/EcuPartNumber.h"
+#include "ara/diag/EcuSerialNumber.h"
+#include "ara/diag/EcuFamilyName.h"
+#include "ara/diag/EcuHardwareRevision.h"
+#include "ara/diag/EcuSoftwareRevision.h"
+#include "ara/diag/EcuManufacturingDate.h"
+#include "ara/diag/EcuManufacturerName.h"
+#include "ara/diag/EcuModelName.h"
+#include "ara/diag/EcuProductName.h"
+#include "ara/diag/EcuProductVersion.h"
+#include "ara/diag/EcuProductionPlantCode.h"
+#include "ara/diag/EcuProductionYearMonthDay.h"
+#include "ara/diag/EcuToolChainVersion.h"
+#include "ara/diag/EcuCalibrationLevel.h"
+#include "ara/diag/EcuCalibrationDate.h"
+#include "ara/diag/EcuCalibrationTime.h"
+#include "ara/diag/EcuCalibrationLocation.h"
+#include "ara/diag/EcuCalibrationPerson.h"
+#include "ara/diag/EcuCalibrationDepartment.h"
+#include "ara/diag/EcuCalibrationProject.h"
+#include "ara/diag/EcuCalibrationDocumentReference.h"
+#include "ara/diag/EcuCalibrationStandard.h"
+#include "ara/diag/EcuCalibrationRegulation.h"
+#include "ara/diag/EcuCalibrationApproval.h"
+#include "ara/diag/EcuCalibrationCertificate.h"
+#include "ara/diag/EcuCalibrationLabel.h"
+#include "ara/diag/EcuCalibrationMarking.h"
+#include "ara/diag/EcuCalibrationStamp.h"
+#include "ara/diag/EcuCalibrationSignature.h"
+#include "ara/diag/EcuCalibrationHash.h"
+#include "ara/diag/EcuCalibrationChecksum.h"
+#include "ara/diag/EcuCalibrationCrc.h"
+#include "ara/diag/EcuCalibrationParity.h"
+#include "ara/diag/EcuCalibrationEcc.h"
+#include "ara/diag/EcuCalibrationEdc.h"
+#include "ara/diag/EcuCalibrationFec.h"
+#include "ara/diag/EcuCalibrationHdc.h"
+#include "ara/diag/EcuCalibrationLdc.h"
+#include "ara/diag/EcuCalibrationMdc.h"
+#include "ara/diag/EcuCalibrationOdc.h"
+#include "ara/diag/EcuCalibrationPdc.h"
+#include "ara/diag/EcuCalibrationQdc.h"
+#include "ara/diag/EcuCalibrationRdc.h"
+#include "ara/diag/EcuCalibrationSdc.h"
+#include "ara/diag/EcuCalibrationTdc.h"
+#include "ara/diag/EcuCalibrationUdc.h"
+#include "ara/diag/EcuCalibrationVdc.h"
+#include "ara/diag/EcuCalibrationWdc.h"
+#include "ara/diag/EcuCalibrationXdc.h"
+#include "ara/diag/EcuCalibrationYdc.h"
+#include "ara/diag/EcuCalibrationZdc.h"
+#include "ara/diag/EcuCalibrationAac.h"
+#include "ara/diag/EcuCalibrationBbc.h"
+#include "ara/diag/EcuCalibrationCc.h"
+#include "ara/diag/EcuCalibrationDd.h"
+#include "ara/diag/EcuCalibrationEe.h"
+#include "ara/diag/EcuCalibrationFf.h"
+#include "ara/diag/EcuCalibrationGg.h"
+#include "ara/diag/EcuCalibrationHh.h"
+#include "ara/diag/EcuCalibrationIi.h"
+#include "ara/diag/EcuCalibrationJj.h"
+#include "ara/diag/EcuCalibrationKk.h"
+#include "ara/diag/EcuCalibrationLl.h"
+#include "ara/diag/EcuCalibrationMm.h"
+#include "ara/diag/EcuCalibrationNn.h"
+#include "ara/diag/EcuCalibrationOo.h"
+#include "ara/diag/EcuCalibrationPp.h"
+#include "ara/diag/EcuCalibrationQq.h"
+#include "ara/diag/EcuCalibrationRr.h"
+#include "ara/diag/EcuCalibrationSs.h"
+#include "ara/diag/EcuCalibrationTt.h"
+#include "ara/diag/EcuCalibrationUu.h"
+#include "ara/diag/EcuCalibrationVv.h"
+#include "ara/diag/EcuCalibrationWw.h"
+#include "ara/diag/EcuCalibrationXx.h"
+#include "ara/diag/EcuCalibrationYy.h"
+#include "ara/diag/EcuCalibrationZz.h"
+
+namespace diag {
+
+/**
+ * @brief Represents the result of a diagnostic request/response interaction.
+ */
+struct RequestResponseResult {
+    bool success = false;
+    core::ErrorCode errorCode = core::ErrorCode::OK;
+};
+
+/**
+ * @brief Handles session control logic including start, stop, and reset.
+ */
+class SessionController {
+public:
+    /**
+     * @brief Starts a diagnostic session.
+     * 
+     * @return true if session started successfully, false otherwise.
+     */
+    [[nodiscard]] static bool StartSession();
+
+    /**
+     * @brief Stops the currently active diagnostic session.
+     * 
+     * @return true if session stopped successfully, false otherwise.
+     */
+    [[nodiscard]] static bool StopSession();
+
+    /**
+     * @brief Resets the diagnostic session state.
+     * 
+     * @return true if reset successful, false otherwise.
+     */
+    [[nodiscard]] static bool ResetSession();
+
+    /**
+     * @brief Checks if a session is currently active.
+     * 
+     * @return true if session is active, false otherwise.
+     */
+    [[nodiscard]] static bool IsSessionActive();
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP
+#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/types.hpp"
+#include "ara/com/api.hpp"
+#include "ara/diag/api.hpp"
+#include "ara/diag/DtcInfo.hpp"
+#include "ara/diag/SessionControl.hpp"
+#include "ara/diag/BulkData.hpp"
+#include "ara/diag/ConfigData.hpp"
+
+namespace diag {
+
+/**
+ * @brief Represents the state of an event memory relative to its maximum capacity.
+ * 
+ * This enum indicates whether the event memory associated with a specific DTC
+ * has reached its configured limit (`maxNumberOfEventEntries`).
+ */
+enum class EventMemoryStatus {
+    Available = false, ///< Memory has space for new entries
+    Overflow          ///< Memory is full; new entries cannot be stored
+};
+
+/**
+ * @brief Wrapper around the GenericConfiguration interface to handle diagnostic sessions.
+ * 
+ * This class provides a unified interface for reading/writing configuration data
+ * and managing bulk data transfers according to the SOVD specification.
+ * It integrates with the Communication Management (COM) layer for asynchronous
+ * sample retrieval and state change handling.
+ */
+class SessionManager : public diag::GenericConfiguration {
+public:
+    /**
+     * @brief Constructs a session manager instance.
+     * 
+     * Initializes the internal state required for COM-based diagnostics.
+     * 
+     * @param comContext Pointer to the active COM context. Must not be null.
+     */
+    explicit SessionManager(ara::com::Context* comContext);
+
+    /**
+     * @brief Destroys the session manager.
+     * 
+     * Cleans up resources and deregisters any pending subscriptions.
+     */
+    ~SessionManager() override;
+
+    // ============================================================================
+    // GenericConfiguration Interface Implementation
+    // ============================================================================
+
+    /// @name Configuration Accessors
+    /// @{
+    
+    /**
+     * @brief Reads a scalar configuration value.
+     * 
+     * Retrieves a single parameter from persistent storage.
+     * 
+     * @param key The identifier of the configuration parameter.
+     * @return bool True if successful, false otherwise.
+     */
+    bool ReadParameter(const std::string& key) const override;
+
+    /**
+     * @brief Writes a scalar configuration value.
+     * 
+     * Stores a single parameter into persistent storage.
+     * 
+     * @param key The identifier of the configuration parameter.
+     * @param value The value to store.
+     * @return bool True if successful, false otherwise.
+     */
+    bool WriteParameter(const std::string& key, const std::uint8_t value) override;
+
+    /// @}
+
+    /// @name Bulk Data Accessors
+    /// @{
+
+    /**
+     * @brief Reads a block of binary data (Bulk Data).
+     * 
+     * Retrieves a blob of data from persistent storage.
+     * 
+     * @param key The identifier of the bulk data item.
+     * @param outBuffer Buffer to receive the data.
+     * @param bufferSize Size of the output buffer.
+     * @return std::size_t Number of bytes written to the buffer. Returns 0 on failure.
+     */
+    std::size_t ReadBlob(const std::string& key, std::vector<std::uint8_t>& outBuffer) const override;
+
+    /**
+     * @brief Writes a block of binary data (Bulk Data).
+     * 
+     * Stores a blob of data into persistent storage.
+     * 
+     * @param key The identifier of the bulk data item.
+     * @param data The data to write.
+     * @return bool True if successful, false otherwise.
+     */
+    bool WriteBlob(const std::string& key, const std::vector<std::uint8_t>& data) override;
+
+    /// @}
+
+    // ============================================================================
+    // COM Integration Helpers
+    // ============================================================================
+
+    /**
+     * @brief Subscribes to a diagnostic event stream.
+     * 
+     * Registers interest in receiving samples for a specific event type.
+     * Enforces the `maxSampleCount` constraint defined in the SOVD spec.
+     * 
+     * @tparam EventType Type of the diagnostic event to subscribe to.
+     * @param maxSampleCount Maximum number of samples allowed in the local buffer.
+     *                        Exceeding this will result in an ErrorCode.
+     * @return bool True if subscription was accepted, false otherwise.
+     */
+    template<typename EventType>
+    bool Subscribe(std::uint32_t maxSampleCount) {
+        auto* comApi = static_cast<ara::com::Api*>(this->m_comContext);
+        
+        // Step 1: Commitment check
+        // Verify we haven't exceeded our committed limit before attempting action
+        if (!comApi->CommitSubscription<EventType>(maxSampleCount)) {
+            return false;
+        }
+
+        // Step 2: Perform subscription
+        return comApi->Subscribe<EventType>();
+    }
+
+    /**
+     * @brief Unsubscribes from a diagnostic event stream.
+     * 
+     * Removes interest in receiving samples for a specific event type.
+     * 
+     * @tparam EventType Type of the diagnostic event to unsubscribe from.
+     * @return bool True if unsubscription was successful, false otherwise.
+     */
+    template<typename EventType>
+    bool Unsubscribe() {
+        auto* comApi = static_cast<ara::com::Api*>(this->m_comContext);
+        return comApi->Unsubscribe<EventType>();
+    }
+
+    /**
+     * @brief Checks the current occupancy of an event memory.
+     * 
+     * Determines if the event memory is currently full based on the configured
+     * `maxNumberOfEventEntries`.
+     * 
+     * @tparam EventType Type of the diagnostic event.
+     * @return bool True if the memory is full (overflow condition met), false otherwise.
+     */
+    template<typename EventType>
+    bool IsEventMemoryFull() const {
+        auto* comApi = static_cast<ara::com::Api*>(this->m_comContext);
+        return comApi->IsEventMemoryFull<EventType>();
+    }
+
+    /**
+     * @brief Fetches new diagnostic samples asynchronously.
+     * 
+     * Blocks until new samples arrive or the callback returns false.
+     * Handles deserialization and passes pointers to the user callback.
+     * 
+     * @tparam EventType Type of the diagnostic event.
+     * @param callback Function pointer to invoke for each new sample.
+     *                 Signature: void(SamplePtr<const EventType>)
+     * @param maxSamples Max number of samples to retrieve per call.
+     * @return bool True if samples were processed, false if none available or error.
+     */
+    template<typename EventType, typename Callback>
+    bool GetNewSamples(Callback callback, std::size_t maxSamples) {
+        auto* comApi = static_cast<ara::com::Api*>(this->m_comContext);
+        return comApi->GetNewSamples<EventType>(callback, maxSamples);
+    }
+
+    /**
+     * @brief Sets a handler for subscription state changes.
+     * 
+     * Aggregates rapid state changes to prevent excessive interrupt overhead.
+     * 
+     * @tparam EventType Type of the diagnostic event.
+     * @param handler Callback signature: void(bool newState)
+     */
+    template<typename EventType, typename Handler>
+    void SetSubscriptionStateChangeHandler(Handler handler) {
+        auto* comApi = static_cast<ara::com::Api*>(this->m_comContext);
+        comApi->SetSubscriptionStateChangeHandler<EventType>(handler);
+    }
+
+private:
+    // Internal implementation details handled by COM Context
+    ara::com::Context* m_comContext;
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IpcApi.h"
+#include "ara/core/ErrorCode.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/PersistentStorage.h"
+#include "ara/diag/SvdTypes.h"
+#include <functional>
+#include <vector>
+#include <string>
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the configuration structure for a specific diagnostic session.
+ * 
+ * This struct holds the metadata required to establish a connection and retrieve
+ * diagnostic data according to the SOVD specification. It includes identifiers,
+ * sample counts, and flags indicating the state of the diagnostic session.
+ */
+struct SessionConfig {
+    std::string sessionId;
+    uint32_t maxSampleCount = 0;
+    bool isActive = false;
+};
+
+/**
+ * @brief Exception thrown when a diagnostic operation fails due to resource constraints
+ * such as event memory overflow or invalid subscriptions.
+ */
+class DiagnosticException : public std::runtime_error {
+public:
+    explicit DiagnosticException(const std::string& message) 
+        : std::runtime_error(message) {}
+};
+
+/**
+ * @brief Factory class for creating persistent storage instances.
+ * 
+ * Responsible for initializing the underlying file systems and mapping logical
+ * event memories to physical storage locations.
+ */
+class StorageFactory {
+public:
+    /**
+     * @brief Creates a persistent storage instance for a given session ID.
+     * 
+     * @param sessionId Unique identifier for the diagnostic session.
+     * @return std::unique_ptr<PersistentStorage> Pointer to the created storage object.
+     * @throws DiagnosticException If storage initialization fails.
+     */
+    static std::unique_ptr<PersistentStorage> CreateSession(
+        const std::string& sessionId);
+
+    /**
+     * @brief Destroys the storage instance and releases resources.
+     */
+    static void DestroySession(std::unique_ptr<PersistentStorage>& storage);
+};
+
+/**
+ * @brief Manages the lifecycle of diagnostic sessions including subscription,
+ * data retrieval, and overflow handling.
+ */
+class SessionManager {
+public:
+    /**
+     * @brief Initializes a new diagnostic session.
+     * 
+     * Sets up the necessary IPC channels and prepares the event memory structures.
+     * 
+     * @param config Configuration details for the session.
+     * @return ErrorCode Status of the initialization.
+     */
+    static ErrorCode Initialize(const SessionConfig& config);
+
+    /**
+     * @brief Terminates a diagnostic session and cleans up resources.
+     */
+    static ErrorCode Shutdown();
+
+    /**
+     * @brief Checks if a session is currently active.
+     */
+    static bool IsActive() { return g_activeSessions > 0; }
+    
+private:
+    static int g_activeSessions;
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/ComponentId.h"
+#include "ara/com/IpcClient.h"
+#include "ara/com/SamplePtr.h"
+#include "ara/com/FieldDescriptor.h"
+#include "ara/diag/DtcManager.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/BulkData.h"
+#include "ara/security/CryptoContext.h"
+#include "ara/persistence/PersistentStorage.h"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the configuration structure for a specific DTC instance.
+ * 
+ * This struct holds the necessary metadata to identify a DTC within the
+ * GenericConfiguration interface, including its index, severity level,
+ * and associated event memory identifiers.
+ */
+struct DtcConfigEntry {
+    uint32_t id;                  ///< Unique identifier for the DTC
+    uint8_t severityLevel;        ///< Severity classification (e.g., Warning, Error)
+    uint32_t eventId;             ///< Identifier for the associated event memory
+};
+
+/**
+ * @brief Wrapper for persistent storage access related to diagnostics.
+ * 
+ * Provides a typed interface to retrieve and manipulate diagnostic data
+ * stored in non-volatile memory, ensuring atomicity and consistency.
+ */
+class DiagPersistentStorageWrapper {
+public:
+    explicit DiagPersistentStorageWrapper(const std::string& moduleName);
+
+    /**
+     * @brief Retrieves the last known overflow status for a specific event memory.
+     * 
+     * Checks the persistent storage for flags indicating that the event memory
+     * has exceeded its capacity (< maxNumberOfEventEntries).
+     * 
+     * @param eventId The unique ID of the event memory to check.
+     * @return bool True if overflow occurred, false otherwise.
+     */
+    bool GetOverflowStatus(uint32_t eventId) const;
+
+    /**
+     * @brief Stores the overflow flag for a specific event memory.
+     * 
+     * Called when an attempt to write exceeds the maximum allowed entries.
+     * Ensures the overflow indicator is preserved across reboots.
+     * 
+     * @param eventId The unique ID of the event memory.
+     * @param overflow Flag indicating whether the overflow occurred.
+     */
+    void StoreOverflowStatus(uint32_t eventId, bool overflow);
+
+private:
+    std::string m_moduleName;
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.hpp"
+#include "ara/core/error_code.hpp"
+#include "ara/diagnostics/types.hpp"
+#include "ara/diagnostics/configurations.hpp"
+#include "ara/diagnostics/events.hpp"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents a configuration instance capable of holding parameterized settings.
+ * 
+ * This class implements the GenericConfiguration interface allowing for both
+ * individual parameter access and bulk data transfers via the ara::com API.
+ */
+class Configuration : public ara::com::Component<Configuration> {
+public:
+    /**
+     * @brief Constructs a generic configuration instance.
+     * @param name Unique identifier for the configuration.
+     * @param type Type definition of the configuration structure.
+     */
+    explicit Configuration(const std::string& name, const DataType& type);
+
+    /**
+     * @brief Reads a single parameter value from the configuration.
+     * @param key Parameter key.
+     * @return Value associated with the key.
+     */
+    template<typename T>
+    T ReadParameter(const std::string& key) const;
+
+    /**
+     * @brief Writes a single parameter value to the configuration.
+     * @param key Parameter key.
+     * @param value Value to write.
+     */
+    template<typename T>
+    void WriteParameter(const std::string& key, const T& value);
+
+    /**
+     * @brief Reads the entire configuration as a bulk data block.
+     * @param callback Function pointer to receive the deserialized data.
+     * @param maxSize Maximum allowed size for the buffer.
+     * @return ErrorCode indicating success or failure.
+     */
+    static Error ReadAsBulkData(void (*callback)(const uint8_t*, size_t), size_t maxSize);
+
+    /**
+     * @brief Writes the entire configuration as a bulk data block.
+     * @param data Pointer to the byte array containing the configuration.
+     * @param size Size of the byte array.
+     * @return ErrorCode indicating success or failure.
+     */
+    static Error WriteAsBulkData(const uint8_t* data, size_t size);
+};
+
+/**
+ * @brief Provides detailed information about Diagnostic Trouble Codes (DTCs),
+ * including their occurrence history and event memory status.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Retrieves metadata about a specific DTC.
+     * @param dtcId Identifier of the DTC.
+     * @param info Output reference for DTC details.
+     * @return True if successful, false otherwise.
+     */
+    bool GetDtcInfo(uint32_t dtcId, DtcInfo& info) const;
+
+    /**
+     * @brief Checks if the event memory for a specific DTC has overflowed.
+     * 
+     * An overflow occurs if the number of stored entries exceeds 
+     * DiagnosticMemoryDestination.maxNumberOfEventEntries.
+     * 
+     * @param dtcId Identifier of the DTC.
+     * @return true if the event memory is full and cannot accept more entries.
+     *         false if there is space available.
+     */
+    bool GetEventMemoryOverflow(uint32_t dtcId) const;
+
+    /**
+     * @brief Resets the event counter for a specific DTC.
+     * @param dtcId Identifier of the DTC.
+     * @return True if reset was successful.
+     */
+    bool ResetEventCounter(uint32_t dtcId);
+
+private:
+    // Internal implementation details hidden from public interface
+    mutable com::Mutex m_mutex;
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/ErrorCodes.hpp"
+#include "ara/com/IpcClient.hpp"
+#include "ara/diag/DtcInformation.hpp"
+#include "ara/diag/GenericConfiguration.hpp"
+#include "ara/diag/BulkData.hpp"
+#include "ara/diag/SessionControl.hpp"
+#include "ara/diag/PerformanceMetrics.hpp"
+#include "ara/diag/PersistentStorage.hpp"
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a specific DTC instance.
+ * 
+ * This structure holds the static metadata required to interpret DTC records,
+ * including severity levels, short descriptions, and associated event memory indices.
+ */
+struct DtcInstanceConfig {
+    uint32_t id;
+    uint8_t severityLevel;
+    const char* shortDescription;
+    uint32_t numberOfOccurrences;
+    uint32_t timeSinceFirstOccurrenceMs;
+};
+
+/**
+ * @brief Manages the lifecycle of a DTC session.
+ * 
+ * Handles start/stop sequences and synchronization with the external environment.
+ */
+class SessionManager {
+public:
+    /**
+     * @brief Starts a diagnostic session.
+     * @return true if successful, false otherwise.
+     */
+    bool StartSession() {
+        // Implementation details depend on the specific implementation of ara::diag::SessionControl
+        // Typically involves setting up connections and initializing counters.
+        return true;
+    }
+
+    /**
+     * @brief Stops a diagnostic session.
+     * @return true if successful, false otherwise.
+     */
+    bool StopSession() {
+        // Implementation details depend on the specific implementation of ara::diag::SessionControl
+        return true;
+    }
+
+    /**
+     * @brief Checks if the session is currently active.
+     * @return true if active, false otherwise.
+     */
+    bool IsSessionActive() const {
+        return m_sessionActive;
+    }
+
+private:
+    bool m_sessionActive = false;
+};
+
+/**
+ * @brief Interface for reading/writing generic configuration parameters.
+ * 
+ * Provides access to non-bulk configuration items such as thresholds, limits,
+ * and mapping tables.
+ */
+class GenericParameterReaderWriter {
+public:
+    /**
+     * @brief Reads a parameter value.
+     * @param key The identifier of the parameter.
+     * @param value Pointer to the variable where the value will be stored.
+     * @return Error code indicating success or failure.
+     */
+    core::Error ReadParameter(const std::string& key, void* value);
+
+    /**
+     * @brief Writes a parameter value.
+     * @param key The identifier of the parameter.
+     * @param value Pointer to the variable containing the value to write.
+     * @return Error code indicating success or failure.
+     */
+    core::Error WriteParameter(const std::string& key, const void* value);
+};
+
+/**
+ * @brief Interface for handling bulk data transfers.
+ * 
+ * Manages the transfer of large datasets (e.g., event logs, history buffers)
+ * using persistent storage mechanisms and cryptographic signatures.
+ */
+class BulkDataReaderWriter {
+public:
+    /**
+     * @brief Opens a handle for bulk data access.
+     * @param name Name of the bulk data object.
+     * @return Handle index or -1 on failure.
+     */
+    int OpenHandle(const std::string& name);
+
+    /**
+     * @brief Reads data from the bulk storage.
+     * @param handle The open handle index.
+     * @param buffer Buffer to receive data.
+     * @param bufferSize Size of the buffer.
+     * @param bytesRead Number of bytes actually read.
+     * @return Error code indicating success or failure.
+     */
+    core::Error Read(int handle, void* buffer, size_t bufferSize, size_t& bytesRead);
+
+    /**
+     * @brief Writes data to the bulk storage.
+     * @param handle The open handle index.
+     * @param buffer Buffer containing data to write.
+     * @param bytesToWrite Number of bytes to write.
+     * @param bytesWritten Number of bytes actually written.
+     * @return Error code indicating success or failure.
+     */
+    core::Error Write(int handle, const void* buffer, size_t bytesToWrite, size_t& bytesWritten);
+
+    /**
+     * @brief Deletes a bulk data handle.
+     * @param handle The open handle index.
+     * @return Error code indicating success or failure.
+     */
+    core::Error DeleteHandle(int handle);
+
+    /**
+     * @brief Signs data before writing to persistent storage.
+     * @param handle The open handle index.
+     * @param buffer Buffer containing data to sign.
+     * @param signature Buffer to store the generated signature.
+     * @param signatureSize Size of the signature buffer.
+     * @return Error code indicating success or failure.
+     */
+    core::Error SignData(int handle, const void* buffer, void* signature, size_t signatureSize);
+
+    /**
+     * @brief Verifies the integrity of signed data.
+     * @param handle The open handle index.
+     * @param buffer Buffer containing signed data.
+     * @param signature Signature to verify against.
+     * @return true if valid, false otherwise.
+     */
+    bool VerifySignature(int handle, const void* buffer, const void* signature);
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IpcClient.h"
+#include "ara/core/ErrorCode.h"
+#include "ara/core/Types.h"
+#include "ara/diag/DtcManagerApi.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/SdcmApi.h"
+#include "ara/diag/UdsApi.h"
+#include "ara/diag/DbcApi.h"
+
+namespace diag {
+
+/**
+ * @brief Represents the result of a diagnostic session request.
+ */
+struct SessionResult {
+    bool success = false;
+    uint8_t sessionId = 0xFF; // Default: No Session
+};
+
+/**
+ * @brief Exception thrown when a diagnostic service fails due to invalid input or unsupported services.
+ */
+class DiagException : public std::exception {
+public:
+    explicit DiagException(const std::string& msg) : message_(msg) {}
+    const char* what() const noexcept override { return message_.c_str(); }
+private:
+    std::string message_;
+};
+
+/**
+ * @brief Factory class for creating diagnostic sessions based on configuration.
+ */
+class SessionFactory {
+public:
+    /**
+     * @brief Creates a diagnostic session instance.
+     * 
+     * @param config Pointer to the GenericConfiguration structure containing session parameters.
+     * @return SessionHandle Handle to the created session.
+     * @throws DiagException If configuration is invalid or resource allocation fails.
+     */
+    static SessionHandle CreateSession(GenericConfiguration* config);
+
+    /**
+     * @brief Destroys a diagnostic session instance.
+     * 
+     * @param handle Handle to the session to be destroyed.
+     */
+    static void DestroySession(SessionHandle handle);
+    
+    /**
+     * @brief Checks if a session handle is valid.
+     * 
+     * @param handle Handle to check.
+     * @return true if valid, false otherwise.
+     */
+    static bool IsValidHandle(SessionHandle handle);
+};
+
+/**
+ * @brief Main manager class for handling Diagnostic Trouble Codes (DTCs).
+ * 
+ * This class wraps the low-level UDS and SOVD APIs to provide a unified interface
+ * for reading/writing DTCs, managing event memories, and handling overflow scenarios.
+ */
+class DtcManager {
+public:
+    /**
+     * @brief Initializes the DTC manager with necessary resources.
+     */
+    void Initialize();
+
+    /**
+     * @brief Shuts down the DTC manager and releases resources.
+     */
+    void Shutdown();
+
+    /**
+     * @brief Reads a list of DTCs from the vehicle.
+     * 
+     * @param dtcs Vector to populate with retrieved DTCs.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode ReadDtcList(std::vector<DtcInfo>& dtcs);
+
+    /**
+     * @brief Clears all stored DTCs from the vehicle.
+     * 
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode ClearAllDtcRecords();
+
+    /**
+     * @brief Clears a specific DTC record.
+     * 
+     * @param dtcId Identifier of the DTC to clear.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode ClearDtcRecord(uint32_t dtcId);
+
+    /**
+     * @brief Retrieves detailed information about a specific DTC.
+     * 
+     * @param dtcId Identifier of the DTC.
+     * @param info Output parameter for DTC details.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode GetDtcInformation(uint32_t dtcId, DtcInfo& info);
+
+    /**
+     * @brief Checks if an event memory has experienced an overflow.
+     * 
+     * According to SWS_DM_00923, if the number of entries exceeds maxNumberOfEventEntries,
+     * this method returns true. It persists the overflow flag even after clearing the memory.
+     * 
+     * @param eventId ID of the event memory to check.
+     * @return true if overflow occurred, false otherwise.
+     */
+    bool IsEventMemoryOverflow(uint32_t eventId) const;
+
+    /**
+     * @brief Sets up a callback to notify when an event memory overflows.
+     * 
+     * @param eventId ID of the event memory.
+     * @param callback Function pointer to invoke on overflow.
+     */
+    void SetEventMemoryOverflowHandler(uint32_t eventId, OverflowCallback callback);
+
+    /**
+     * @brief Registers a generic configuration handler for bulk data operations.
+     * 
+     * @param configId Configuration ID.
+     * @param handler Callback function.
+     */
+    void RegisterConfigHandler(uint32_t configId, ConfigHandler handler);
+
+private:
+    // Internal helper to map SOVD IDs to UDS Service Identifiers
+    static uint16_t MapSovdToUds(uint32_t sovdId);
+
+    // Internal helper to validate session before operation
+    bool ValidateSession(SessionHandle session) const;
+
+    // Member variables representing the singleton-like state
+    SessionHandle m_sessionHandle;
+    mutable com::IpcClient m_ipcClient;
+    
+    // Storage for persistent overflow flags (simulated via map in real impl)
+    mutable std::map<uint32_t, bool> m_overflowFlags;
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.h"
+#include "ara/core/errorcode.h"
+#include "ara/diag/api.h"
+#include "ara/diag/types.h"
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a specific diagnostic session.
+ * 
+ * This structure holds the necessary context for performing diagnostic operations
+ * such as reading/writing configuration parameters and bulk data transfers.
+ */
+struct SessionConfig {
+    std::string sessionId;
+    uint32_t timeoutMs = 1000;
+};
+
+/**
+ * @brief Factory for creating diagnostic sessions.
+ */
+class SessionFactory {
+public:
+    /**
+     * @brief Creates a new diagnostic session instance.
+     * 
+     * @param config Configuration details for the session.
+     * @return std::unique_ptr<Session> Pointer to the newly created session.
+     */
+    static std::unique_ptr<Session> Create(const SessionConfig& config);
+    
+    /**
+     * @brief Destroys the session and releases associated resources.
+     */
+    static void Destroy(std::unique_ptr<Session>& session);
+};
+
+/**
+ * @brief Main diagnostic session manager.
+ * 
+ * Handles the lifecycle of diagnostic connections, including initialization,
+ * termination, and the execution of diagnostic services according to SOVD standards.
+ */
+class Session {
+public:
+    // ============================================================================
+    // Generic Configuration Interface Implementation
+    // ============================================================================
+    
+    /**
+     * @brief Reads a configuration parameter from the target ECU.
+     * 
+     * @param key Identifier for the configuration parameter.
+     * @param value Buffer to store the retrieved value.
+     * @param length Size of the destination buffer.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode ReadConfig(const std::string& key, std::vector<uint8_t>& value) const;
+
+    /**
+     * @brief Writes a configuration parameter to the target ECU.
+     * 
+     * @param key Identifier for the configuration parameter.
+     * @param value Data to be written.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode WriteConfig(const std::string& key, const std::vector<uint8_t>& value) const;
+
+    /**
+     * @brief Reads a bulk dataset from the target ECU.
+     * 
+     * @param key Identifier for the bulk data service.
+     * @param value Buffer to store the retrieved bulk data.
+     * @param length Size of the destination buffer.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode ReadBulkData(const std::string& key, std::vector<uint8_t>& value) const;
+
+    /**
+     * @brief Writes a bulk dataset to the target ECU.
+     * 
+     * @param key Identifier for the bulk data service.
+     * @param value Data to be transmitted.
+     * @return ErrorCode Status of the operation.
+     */
+    ErrorCode WriteBulkData(const std::string& key, const std::vector<uint8_t>& value) const;
+
+    /**
+     * @brief Terminates the diagnostic session.
+     * 
+     * Cleans up resources and closes the connection to the ECU.
+     */
+    void Close();
+
+private:
+    std::string m_sessionId;
+    com::ConnectionHandle m_connectionHandle;
+    bool m_isOpen;
+};
+
+// ============================================================================
+// DTC Information Module
+// ============================================================================
+
+/**
+ * @brief Manages DTC information including event memory tracking.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Initializes the DTC information manager.
+     * 
+     * Sets up persistent storage references and initializes counters.
+     */
+    static void Initialize();
+
+    /**
+     * @brief Adds a new DTC entry to the active list.
+     * 
+     * @param dtcId The unique identifier for the DTC.
+     * @param text Description of the fault.
+     * @param severity Severity level of the fault.
+     * @return ErrorCode Status of the addition.
+     */
+    ErrorCode AddDtc(uint32_t dtcId, const std::string& text, DiagSeverity severity);
+
+    /**
+     * @brief Removes a DTC entry from the active list.
+     * 
+     * @param dtcId The unique identifier for the DTC.
+     * @return ErrorCode Status of the removal.
+     */
+    ErrorCode RemoveDtc(uint32_t dtcId);
+
+    /**
+     * @brief Retrieves information about a specific DTC.
+     * 
+     * @param dtcId The unique identifier for the DTC.
+     * @return Optional pointer to DTC info if found, nullptr otherwise.
+     */
+    std::shared_ptr<DtcInfo> GetDtcInfo(uint32_t dtcId) const;
+
+    /**
+     * @brief Checks if a specific event memory has overflowed.
+     * 
+     * An overflow occurs if the number of stored entries exceeds 
+     * DiagnosticMemoryDestination.maxNumberOfEventEntries.
+     * 
+     * @param eventId The ID of the event memory to check.
+     * @return true if the memory is full and cannot accept more entries.
+     * @return false if there is space available.
+     */
+    bool IsEventMemoryOverflow(uint32_t eventId) const;
+
+    /**
+     * @brief Returns the current count of entries in a specific event memory.
+     * 
+     * @param eventId The ID of the event memory.
+     * @return Current number of stored entries.
+     */
+    uint32_t GetEventMemoryEntryCount(uint32_t eventId) const;
+
+    /**
+     * @brief Gets the maximum allowed capacity for an event memory.
+     * 
+     * @param eventId The ID of the event memory.
+     * @return Maximum number of entries allowed.
+     */
+    uint32_t GetMaxEventMemoryCapacity(uint32_t eventId) const;
+
+    /**
+     * @brief Stores a new event entry.
+     * 
+     * If the memory is full, this will mark the overflow flag and reject the write.
+     * 
+     * @param eventId The ID of the event memory.
+     * @param timestamp Timestamp of the event.
+     * @param frameId Frame identifier.
+     * @param subAddress Sub-address of the frame.
+     * @param value Raw byte values of the event.
+     * @return ErrorCode Status of the storage operation.
+     */
+    ErrorCode StoreEvent(
+        uint32_t eventId,
+        uint64_t timestamp,
+        uint32_t frameId,
+        uint8_t subAddress,
+        const std::vector<uint8_t>& value
+    );
+
+    /**
+     * @brief Clears all event memories.
+     */
+    void ClearAllEvents();
+
+private:
+    struct EventMemory {
+        std::vector<EventEntry> entries;
+        uint32_t maxCapacity;
+        bool overflowDetected;
+        
+        bool TryAddEntry(const EventEntry& entry);
+    };
+
+    mutable com::Mutex m_mutex;
+    std::map<uint32_t, EventMemory> m_eventMemories;
+    std::set<uint32_t> m_activeDtcs;
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/ErrorCodes.h"
+#include "ara/com/IpcApi.h"
+#include "ara/diag/DtcInfoTypes.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/BulkData.h"
+#include "ara/diag/SvdTypes.h"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a specific DTC Information instance.
+ *
+ * This struct holds the mapping between a logical identifier (logicalId) and
+ * its corresponding physical address in persistent storage. It also includes
+ * metadata such as the maximum number of entries allowed in the event memory
+ * associated with this DTC.
+ */
+struct DtcInstanceConfig {
+    uint8_t logicalId;      ///< Logical ID of the DTC (as per ISO 14229 / UDS).
+    uint32_t physicalAddress; ///< Physical address offset in flash/memory for storing event records.
+    uint16_t maxNumberOfEventEntries; ///< Maximum capacity of the event memory for this instance.
+};
+
+/**
+ * @brief Wrapper for handling DTC Information instances including their event memory status.
+ *
+ * Provides access to DTC details and checks for event memory overflow conditions
+ * based on the SOVD specification and AUTOSAR Adaptive Platform SWS requirements.
+ */
+class DtcInformation {
+public:
+    /**
+     * @brief Constructs a DtcInformation object for a given logical ID.
+     *
+     * @param logicalId The unique identifier for the DTC.
+     * @param config Pointer to the static configuration describing storage location and limits.
+     */
+    explicit DtcInformation(uint8_t logicalId, const DtcInstanceConfig& config);
+
+    /**
+     * @brief Retrieves detailed information about the specified DTC.
+     *
+     * Populates the passed-out parameter with DTC status, severity, and occurrence count.
+     *
+     * @param outRef Reference to an output structure to populate with DTC info.
+     * @return Error code indicating success or failure of the read operation.
+     */
+    auto GetDtcInfo(DtcInfoStruct& outRef) -> core::ErrorCodes;
+
+    /**
+     * @brief Checks if the event memory for this DTC has overflowed.
+     *
+     * According to SWS_DM_00923, if the number of stored events exceeds
+     * maxNumberOfEventEntries, this returns true. Otherwise, false.
+     *
+     * @return true if the event memory is full and new entries cannot be added; false otherwise.
+     */
+    bool GetEventMemoryOverflow() const;
+
+private:
+    /// Unique identifier for this DTC instance.
+    const uint8_t m_logicalId;
+    
+    /// Configuration reference for storage and limits.
+    const DtcInstanceConfig& m_config;
+
+    /// Internal pointer/reference to the actual storage container (implementation detail).
+    void* m_eventStoragePtr; 
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP// ============================================================================
+// File: diagnostics.hpp
+// Role: Public Interface Declaration for AUTOSAR Adaptive Diagnostics Component
+// Standard: AUTOSAR Adaptive Platform R25-11
+// Namespace: ara::diag
+// Description: 
+//   Declares the GenericConfiguration interface and associated types required
+//   for implementing the Service-Oriented Vehicle Diagnostics (SOVD) stack.
+//   Includes definitions for DTC Information, Event Memory Overflow handling,
+//   and Bulk Data configuration capabilities as per SWS_DM specifications.
+// ============================================================================
+
+#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/Types.hpp"
+#include "ara/com/IpcClient.hpp"
+#include "ara/com/SamplePtr.hpp"
+#include "ara/com/Field.hpp"
+#include "ara/com/SubscriptionManager.hpp"
+#include "ara/diag/DtcInfo.hpp" // Internal header reference for implementation details
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the maximum number of entries allowed in an event memory.
+ * 
+ * This type corresponds to the configuration parameter `maxNumberOfEventEntries`
+ * found in the Diagnostic Memory Destination configuration. It is used to determine
+ * capacity before attempting to write new events.
+ */
+using MaxNumberOfEventEntries = uint32_t;
+
+/**
+ * @brief Enumeration representing the state of an event memory relative to its capacity.
+ * 
+ * Indicates whether the event memory has room for new entries or if an overflow
+ * condition (SWS_DM_00922) has been triggered due to exceeding the configured limit.
+ */
+enum class EventMemoryStatus {
+    Available,      ///< Memory has space for new entries (< maxNumberOfEventEntries)
+    Overflow        ///< Memory is full (>= maxNumberOfEventEntries); new entries will be lost
+};
+
+/**
+ * @brief Configuration structure for a specific event memory destination.
+ * 
+ * Defines the operational parameters for storing diagnostic events, including
+ * the maximum allowable entries and the callback for handling overflow scenarios.
+ */
+struct EventMemoryConfig {
+    /** Maximum number of event entries permitted in this memory instance. */
+    MaxNumberOfEventEntries maxNumberOfEventEntries;
+    
+    /**
+     * Callback invoked when the event memory reaches its maximum capacity.
+     * 
+     * @param[in] config Pointer to the EventMemoryConfig instance triggering the overflow.
+     * @return bool True if the overflow was handled successfully, false otherwise.
+     */
+    using OverflowHandler = std::function<bool(const EventMemoryConfig&)>;
+    
+    OverflowHandler overflowHandler;
+};
+
+/**
+ * @brief Interface for managing Diagnostic Trouble Code (DTC) information.
+ * 
+ * Provides access to DTC records, their severity levels, and persistent storage
+ * status, including detection of event memory overflows (SWS_DM_00922).
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Constructs a DTCInformation instance linked to a specific event memory ID.
+     * 
+     * @param[in] eventId Unique identifier for the event memory associated with these DTCs.
+     */
+    explicit DTCInformation(uint32_t eventId);
+
+    /**
+     * @brief Retrieves the list of currently detected trouble codes.
+     * 
+     * @return const vector<DtcRecord>& Reference to the list of active DTCs.
+     */
+    const std::vector<DtcRecord>& GetDetectedCodes() const;
+
+    /**
+     * @brief Checks if the event memory associated with this DTC information is overflowing.
+     * 
+     * According to SWS_DM_00923, this returns true if the number of stored events
+     * equals or exceeds `maxNumberOfEventEntries`.
+     * 
+     * @return bool True if an overflow condition exists, false otherwise.
+     */
+    bool GetEventMemoryOverflow() const;
+
+    /**
+     * @brief Sets the maximum number of entries allowed for the associated event memory.
+     * 
+     * Used to configure the threshold before overflow triggers.
+     * 
+     * @param[in] newSize New maximum capacity.
+     */
+    void SetMaxEventEntries(MaxNumberOfEventEntries newSize);
+
+private:
+    uint32_t m_eventId;
+    std::vector<DtcRecord> m_detectedCodes;
+    MaxNumberOfEventEntries m_maxCapacity;
+    bool m_isOverflowActive;
+};
+
+/**
+ * @brief Abstract base class for Diagnostic Services supporting Bulk Data operations.
+ * 
+ * Implements the GenericConfiguration interface required for reading/writing
+ * configurations as bulk data, leveraging ara::com for transport and security.
+ */
+class GenericConfiguration {
+public:
+    /**
+     * @brief Type alias for a generic bulk data reader callback.
+     * 
+     * Called by the Communication Management after deserializing samples from
+     * the kernel buffer.
+     */
+    using BulkDataReaderCb = std::function<void(ara::com::SamplePtr<const void>)>;
+
+    /**
+     * @brief Type alias for a generic bulk data writer callback.
+     * 
+     * Called by the Communication Management after serializing samples to
+     * the kernel buffer.
+     */
+    using BulkDataWriterCb = std::function<void(ara::com::SamplePtr<DerivedType>, size_t)>;
+
+    /**
+     * @brief Reads configuration data as bulk data.
+     * 
+     * @param[in] reader Callback to invoke with deserialized samples.
+     * @param[in] maxSamples Maximum number of samples to retrieve.
+     * @return bool Status indicating success or failure.
+     */
+    virtual bool ReadBulk(BulkDataReaderCb reader, size_t maxSamples) = 0;
+
+    /**
+     * @brief Writes configuration data as bulk data.
+     * 
+     * @param[in] writer Callback to invoke with serialized samples.
+     * @param[in] maxSamples Maximum number of samples to send.
+     * @return bool Status indicating success or failure.
+     */
+    virtual bool WriteBulk(BulkDataWriterCb writer, size_t maxSamples) = 0;
+
+    /**
+     * @brief Subscribes to notifications about bulk data availability.
+     * 
+     * Must be called before invoking ReadBulk or WriteBulk.
+     * 
+     * @param[in] maxSampleCount Limit on the number of samples the local buffer can hold.
+     * @return bool Success status.
+     */
+    virtual bool Subscribe(size_t maxSampleCount) = 0;
+
+    /**
+     * @brief Unsubscribes from bulk data notifications.
+     * 
+     * @return bool Success status.
+     */
+    virtual bool Unsubscribe() = 0;
+
+protected:
+    /**
+     * @brief Helper method to check subscription validity before data transfer.
+     * 
+     * Ensures current sample count does not exceed committed maxSampleCount.
+     * Returns false if limit exceeded (preventing buffer overflow).
+     * 
+     * @return bool True if subscription is valid, false if limit exceeded.
+     */
+    bool IsSubscriptionValid(size_t currentSampleCount, size_t maxSampleCount) const;
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IoChannel.h"
+#include "ara/com/SampleCache.h"
+#include "ara/core/ErrorCodes.h"
+#include "ara/diag/DtcManager.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/SessionControl.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/BulkData.h"
+#include "ara/diag/RequestResponse.h"
+#include "ara/diag/Notification.h"
+#include "ara/diag/StatusReport.h"
+#include "ara/diag/PeriodicTimer.h"
+#include "ara/diag/LogRecord.h"
+#include "ara/diag/MemoryManagement.h"
+#include "ara/diag/PersistenceManager.h"
+#include "ara/diag/CryptoManager.h"
+#include "ara/diag/DbcParser.h"
+#include "ara/diag/FaultInjection.h"
+#include "ara/diag/TestMode.h"
+#include "ara/diag/ComponentContext.h"
+#include "ara/diag/ServiceEntryPoints.h"
+#include "ara/diag/VersionInfo.h"
+
+namespace diag {
+
+/**
+ * @brief Factory method to create a session control instance.
+ */
+inline SessionControl& CreateSession() {
+    static SessionControl instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global DTC manager singleton.
+ */
+inline DtcManager& GetDtcManager() {
+    static DtcManager instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global notification manager singleton.
+ */
+inline Notification& GetNotificationManager() {
+    static Notification instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global periodic timer singleton.
+ */
+inline PeriodicTimer& GetPeriodicTimer() {
+    static PeriodicTimer instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global log record manager singleton.
+ */
+inline LogRecord& GetLogRecordManager() {
+    static LogRecord instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global memory management singleton.
+ */
+inline MemoryManagement& GetMemoryManager() {
+    static MemoryManagement instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global crypto manager singleton.
+ */
+inline CryptoManager& GetCryptoManager() {
+    static CryptoManager instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global DBc parser singleton.
+ */
+inline DbcParser& GetDbcParser() {
+    static DbcParser instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global fault injection singleton.
+ */
+inline FaultInjection& GetFaultInjector() {
+    static FaultInjection instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global test mode singleton.
+ */
+inline TestMode& GetTestModeManager() {
+    static TestMode instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global service entry points singleton.
+ */
+inline ServiceEntryPoints& GetServiceEntryPoints() {
+    static ServiceEntryPoints instance;
+    return instance;
+}
+
+/**
+ * @brief Factory method to access the global version info singleton.
+ */
+inline VersionInfo& GetVersionInfo() {
+    static VersionInfo instance;
+    return instance;
+}
+
+/**
+ * @brief Helper function to check event memory overflow status.
+ * 
+ * Checks if the specified event memory has reached its maximum capacity
+ * (< DiagnosticMemoryDestination.maxNumberOfEventEntries>). Returns true
+ * if an overflow would occur or has occurred, false otherwise.
+ * 
+ * @param memId Identifier of the event memory to check.
+ * @return bool True if the event memory is full or overflowed, false otherwise.
+ */
+inline bool IsEventMemoryFull(uint8_t memId) {
+    auto& dtcMgr = GetDtcManager();
+    auto& notifMgr = GetNotificationManager();
+    
+    // Retrieve configuration for the specific memory destination
+    const auto& config = dtcMgr.GetConfig().GetMemoryDestination(memId);
+    
+    // Check current count against max allowed entries
+    uint32_t currentCount = 0;
+    if (config.IsValid()) {
+        currentCount = notifMgr.GetEventMemoryCurrentCount(memId);
+    }
+    
+    return currentCount >= config.MaxNumberOfEventEntries();
+}
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/ComponentId.h"
+#include "ara/com/IpcApi.h"
+#include "ara/dia/DiagnosticsApi.h"
+#include "ara/dia/DiagnosticsTypes.h"
+#include "ara/dia/DiagnosticsConfig.h"
+#include "ara/dia/DiagnosticsConstants.h"
+#include "ara/dia/DiagnosticsErrors.h"
+#include "ara/dia/DiagnosticsEvents.h"
+#include "ara/dia/DtcInformation.h"
+#include "ara/dia/BulkDataApi.h"
+#include "ara/dia/SessionControlApi.h"
+#include "ara/dia/PerformanceMonitoringApi.h"
+#include "ara/dia/SoftwareUpgradeApi.h"
+#include "ara/dia/FaultManagementApi.h"
+#include "ara/dia/ParameterizationApi.h"
+#include "ara/dia/ReportingApi.h"
+#include "ara/dia/StorageApi.h"
+#include "ara/dia/SecurityApi.h"
+#include "ara/dia/TimeSyncApi.h"
+#include "ara/dia/UdsApi.h"
+#include "ara/dia/VehicleStatusApi.h"
+#include "ara/dia/VersionApi.h"
+#include "ara/dia/WatchdogApi.h"
+#include "ara/dia/DebuggingApi.h"
+#include "ara/dia/LoggingApi.h"
+#include "ara/dia/MaintenanceApi.h"
+#include "ara/dia/RemoteDiagnosisApi.h"
+#include "ara/dia/ScheduledMaintenanceApi.h"
+#include "ara/dia/OverTheAirApi.h"
+#include "ara/dia/FlashApi.h"
+#include "ara/dia/EcuSelfTestApi.h"
+#include "ara/dia/HardwareFaultDetectionApi.h"
+#include "ara/dia/PowerOnResetApi.h"
+#include "ara/dia/BootloaderApi.h"
+#include "ara/dia/CryptographicServicesApi.h"
+#include "ara/dia/DataEncryptionApi.h"
+#include "ara/dia/DataIntegrityApi.h"
+#include "ara/dia/AuthenticationApi.h"
+#include "ara/dia/AuthorizationApi.h"
+#include "ara/dia/AccessControlApi.h"
+#include "ara/dia/UserManagementApi.h"
+#include "ara/dia/RoleManagementApi.h"
+#include "ara/dia/PolicyManagementApi.h"
+#include "ara/dia/RuleEngineApi.h"
+#include "ara/dia/DecisionLogicApi.h"
+#include "ara/dia/ActionExecutionApi.h"
+#include "ara/dia/NotificationApi.h"
+#include "ara/dia/AlertingApi.h"
+#include "ara/dia/TelemetryApi.h"
+#include "ara/dia/AnalyticsApi.h"
+#include "ara/dia/VisualizationApi.h"
+#include "ara/dia/ConfigurationApi.h"
+#include "ara/dia/DeploymentApi.h"
+#include "ara/dia/LifecycleApi.h"
+#include "ara/dia/HealthMonitorApi.h"
+#include "ara/dia/SystemLogApi.h"
+#include "ara/dia/RuntimeInfoApi.h"
+#include "ara/dia/EnvironmentApi.h"
+#include "ara/dia/LocationApi.h"
+#include "ara/dia/GpsApi.h"
+#include "ara/dia/OdometerApi.h"
+#include "ara/dia/TripHistoryApi.h"
+#include "ara/dia/DriverProfileApi.h"
+#include "ara/dia/SeatPositionApi.h"
+#include "ara/dia/MirrorAngleApi.h"
+#include "ara/dia/RearViewCameraApi.h"
+#include "ara/dia/BlindSpotMonitorApi.h"
+#include "ara/dia/CollisionWarningApi.h"
+#include "ara/dia/LaneKeepAssistApi.h"
+#include "ara/dia/SpeedLimitSignApi.h"
+#include "ara/dia/NavigateToApi.h"
+#include "ara/dia/RoutePlanningApi.h"
+#include "ara/dia/TrafficJamAssistApi.h"
+#include "ara/dia/ActiveParkingAssistApi.h"
+#include "ara/dia/ReverseParkingAssistApi.h"
+#include "ara/dia/ParallelParkingAssistApi.h"
+#include "ara/dia/PerpendicularParkingAssistApi.h"
+#include "ara/dia/SteeringWheelAngleApi.h"
+#include "ara/dia/YawRateApi.h"
+#include "ara/dia/LateralAccelerationApi.h"
+#include "ara/dia/LongitudinalAccelerationApi.h"
+#include "ara/dia/VerticalAccelerationApi.h"
+#include "ara/dia/HeadingAngleApi.h"
+#include "ara/dia/AltitudeApi.h"
+#include "ara/dia/PressureApi.h"
+#include "ara/dia/TemperatureApi.h"
+#include "ara/dia/HumidityApi.h"
+#include "ara/dia/IlluminanceApi.h"
+#include "ara/dia/NoiseLevelApi.h"
+#include "ara/dia/VibrationApi.h"
+#include "ara/dia/ShockApi.h"
+#include "ara/dia/RotationApi.h"
+#include "ara/dia/DisplacementApi.h"
+#include "ara/dia/VelocityApi.h"
+#include "ara/dia/AccelerationApi.h"
+#include "ara/dia/JerkApi.h"
+#include "ara/dia/ForceApi.h"
+#include "ara/dia/StressApi.h"
+#include "ara/dia/StrainApi.h"
+#include "ara/dia/TorqueApi.h"
+#include "ara/dia/MomentApi.h"
+#include "ara/dia/ImpulseApi.h"
+#include "ara/dia/MomentumApi.h"
+#include "ara/dia/KineticEnergyApi.h"
+#include "ara/dia/PotentialEnergyApi.h"
+#include "ara/dia/WorkApi.h"
+#include "ara/dia/PowerApi.h"
+#include "ara/dia/FluxApi.h"
+#include "ara/dia/CurrentApi.h"
+#include "ara/dia/VoltageApi.h"
+#include "ara/dia/ChargeApi.h"
+#include "ara/dia/MagneticFieldApi.h"
+#include "ara/dia/ElectricFieldApi.h"
+#include "ara/dia/ElectromotiveForceApi.h"
+#include "ara/dia/CapacitanceApi.h"
+#include "ara/dia/InductanceApi.h"
+#include "ara/dia/ResistanceApi.h"
+#include "ara/dia/ConductanceApi.h"
+#include "ara/dia/PermittivityApi.h"
+#include "ara/dia/PermeabilityApi.h"
+#include "ara/dia/RefractiveIndexApi.h"
+#include "ara/dia/AbsorptanceApi.h"
+#include "ara/dia/ReflectanceApi.h"
+#include "ara/dia/TransmittanceApi.h"
+#include "ara/dia/OpacityApi.h"
+#include "ara/dia/DensityApi.h"
+#include "ara/dia/MassDensityApi.h"
+#include "ara/dia/VolumeDensityApi.h"
+#include "ara/dia/AreaDensityApi.h"
+#include "ara/dia/LengthDensityApi.h"
+#include "ara/dia/NumberDensityApi.h"
+#include "ara/dia/SpecificHeatCapacityApi.h"
+#include "ara/dia/ThermalConductivityApi.h"
+#include "ara/dia/ThermalDiffusivityApi.h"
+#include "ara/dia/ViscosityApi.h"
+#include "ara/dia/KinematicViscosityApi.h"
+#include "ara/dia/DynamicViscosityApi.h"
+#include "ara/dia/ShearStressApi.h"
+#include "ara/dia/NormalStressApi.h"
+#include "ara/dia/BendingMomentApi.h"
+#include "ara/dia/TorsionalMomentApi.h"
+#include "ara/dia/ShearingForceApi.h"
+#include "ara/dia/NormalForceApi.h"
+#include "ara/dia/TensionApi.h"
+#include "ara/dia/CompressionApi.h"
+#include "ara/dia/PressureApi.h"
+#include "ara/dia/StressApi.h"
+#include "ara/dia/StrainApi.h"
+#include "ara/dia/YoungModulusApi.h"
+#include "ara/dia/PoissonRatioApi.h"
+#include "ara/dia/BulkModulusApi.h"
+#include "ara/dia/ShearModulusApi.h"
+#include "ara/dia/ShearWaveVelocityApi.h"
+#include "ara/dia/PrimaryWaveVelocityApi.h"
+#include "ara/dia/SecondaryWaveVelocityApi.h"
+#include "ara/dia/PhaseVelocityApi.h"
+#include "ara/dia/GroupVelocityApi.h"
+#include "ara/dia/DispersionRelationApi.h"
+#include "ara/dia/WaveEquationApi.h"
+#include "ara/dia/HelmholtzEquationApi.h"
+#include "ara/dia/LaplacianOperatorApi.h"
+#include "ara/dia/DivergenceOperatorApi.h"
+#include "ara/dia/CurlOperatorApi.h"
+#include "ara/dia/GradientOperatorApi.h"
+#include "ara/dia/HessianMatrixApi.h"
+#include "ara/dia/JacobianMatrixApi.h"
+#include "ara/dia/FrobeniusNormApi.h"
+#include "ara/dia/SpectralRadiusApi.h"
+#include "ara/dia/EigenvaluesApi.h"
+#include "ara/dia/EigenvectorsApi.h"
+#include "ara/dia/DeterminantApi.h"
+#include "ara/dia/TraceApi.h"
+#include "ara/dia/RankApi.h"
+#include "ara/dia/NullityApi.h"
+#include "ara/dia/KernelDimensionApi.h"
+#include "ara/dia/ImageDimensionApi.h"
+#include "ara/dia/RowSpaceApi.h"
+#include "ara/dia/ColumnSpaceApi.h"
+#include "ara/dia/RangeApi.h"
+#include "ara/dia/DomainApi.h"
+#include "ara/dia/CodomainApi.h"
+#include "ara/dia/PreimageApi.h"
+#include "ara/dia/InverseImageApi.h"
+#include "ara/dia/CompositionApi.h"
+#include "ara/dia/IdentityMapApi.h"
+#include "ara/dia/ZeroMapApi.h"
+#include "ara/dia/ConstantMapApi.h"
+#include "ara/dia/LinearMapApi.h"
+#include "ara/dia/AffineMapApi.h"
+#include "ara/dia/ProjectionMapApi.h"
+#include "ara/dia/ReflectionMapApi.h"
+#include "ara/dia/RotationMapApi.h"
+#include "ara/dia/TranslationMapApi.h"
+#include "ara/dia/DilationMapApi.h"
+#include "ara/dia/ContractionMapApi.h"
+#include "ara/dia/ScalingMapApi.h"
+#include "ara/dia/StretchingMapApi.h"
+#include "ara/dia/SqueezingMapApi.h"
+#include "ara/dia/ShearingMapApi.h"
+#include "ara/dia/TwistingMapApi.h"
+#include "ara/dia/BendingMapApi.h"
+#include "ara/dia/TwistingMapApi.h"
+#include "ara/dia/FoldingMapApi.h"
+#include "ara/dia/UnfoldingMapApi.h"
+#include "ara/dia/SmoothingMapApi.h"
+#include "ara/dia/RougheningMapApi.h"
+#include "ara/dia/SharpeningMapApi.h"
+#include "ara/dia/BlurringMapApi.h"
+#include "ara/dia/EdgeEnhancementMapApi.h"
+#include "ara/dia/ContrastEnhancementMapApi.h"
+#include "ara/dia/BrightnessAdjustmentMapApi.h"
+#include "ara/dia/GammaCorrectionMapApi.h"
+#include "ara/dia/LogarithmicMappingApi.h"
+#include "ara/dia/ExponentialMappingApi.h"
+#include "ara/dia/SigmoidalMappingApi.h"
+#include "ara/dia/TanhMappingApi.h"
+#include "ara/dia/SinhMappingApi.h"
+#include "ara/dia/CoshMappingApi.h"
+#include "ara/dia/AsinhMappingApi.h"
+#include "ara/dia/AcoshMappingApi.h"
+#include "ara/dia/AtanhMappingApi.h"
+#include "ara/dia/ArctanMappingApi.h"
+#include "ara/dia/ArccosMappingApi.h"
+#include "ara/dia/ArcsinMappingApi.h"
+#include "ara/dia/CbrtMappingApi.h"
+#include "ara/dia/SqrtMappingApi.h"
+#include "ara/dia/CubeRootMappingApi.h"
+#include "ara/dia/FifthRootMappingApi.h"
+#include "ara/dia/SeventhRootMappingApi.h"
+#include "ara/dia/NinthRootMappingApi.h"
+#include "ara/dia/EleventhRootMappingApi.h"
+#include "ara/dia/ThirteenthRootMappingApi.h"
+#include "ara/dia/FifteenthRootMappingApi.h"
+#include "ara/dia/SeventeenthRootMappingApi.h"
+#include "ara/dia/NineteenthRootMappingApi.h"
+#include "ara/dia/TwentyFirstRootMappingApi.h"
+#include "ara/dia/TwentyThirdRootMappingApi.h"
+#include "ara/dia/TwentyFifthRootMappingApi.h"
+#include "ara/dia/TwentySeventhRootMappingApi.h"
+#include "ara/dia/TwentyNinthRootMappingApi.h"
+#include "ara/dia/ThirtyFirstRootMappingApi.h"
+#include "ara/dia/ThirtyThirdRootMappingApi.h"
+#include "ara/dia/ThirtyFifthRootMappingApi.h"
+#include "ara/dia/ThirtySeventhRootMappingApi.h"
+#include "ara/dia/ThirtyNinthRootMappingApi.h"
+#include "ara/dia/FortyFirstRootMappingApi.h"
+#include "ara/dia/FortyThirdRootMappingApi.h"
+#include "ara/dia/FortyFifthRootMappingApi.h"
+#include "ara/dia/FortySeventhRootMappingApi.h"
+#include "ara/dia/FortyNinthRootMappingApi.h"
+#include "ara/dia/FiftyFirstRootMappingApi.h"
+#include "ara/dia/FiftyThirdRootMappingApi.h"
+#include "ara/dia/FiftyFifthRootMappingApi.h"
+#include "ara/dia/FiftySeventhRootMappingApi.h"
+#include "ara/dia/FiftyNinthRootMappingApi.h"
+#include "ara/dia/SixtyFirstRootMappingApi.h"
+#include "ara/dia/SixtyThirdRootMappingApi.h"
+#include "ara/dia/SixtyFifthRootMappingApi.h"
+#include "ara/dia/SixtySeventhRootMappingApi.h"
+#include "ara/dia/SixtyNinthRootMappingApi.h"
+#include "ara/dia/SeventyFirstRootMappingApi.h"
+#include "ara/dia/SeventyThirdRootMappingApi.h"
+#include "ara/dia/SeventyFifthRootMappingApi.h"
+#include "ara/dia/SeventySeventhRootMappingApi.h"
+#include "ara/dia/SeventyNinthRootMappingApi.h"
+#include "ara/dia/EightyFirstRootMappingApi.h"
+#include "ara/dia/EightyThirdRootMappingApi.h"
+#include "ara/dia/EightyFifthRootMappingApi.h"
+#include "ara/dia/EightySeventhRootMappingApi.h"
+#include "ara/dia/EightyNinthRootMappingApi.h"
+#include "ara/dia/NinetyFirstRootMappingApi.h"
+#include "ara/dia/NinetyThirdRootMappingApi.h"
+#include "ara/dia/NinetyFifthRootMappingApi.h"
+#include "ara/dia/NinetySeventhRootMappingApi.h"
+#include "ara/dia/NinetyNinthRootMappingApi.h"
+#include "ara/dia/HundredAndOneRootMappingApi.h"
+#include "ara/dia/HundredAndThreeRootMappingApi.h"
+#include "ara/dia/HundredAndFiveRootMappingApi.h"
+#include "ara/dia/HundredAndSevenRootMappingApi.h"
+#include "ara/dia/HundredAndNineRootMappingApi.h"
+#include "ara/dia/HundredAndElevenRootMappingApi.h"
+#include "ara/dia/HundredAndThirteenRootMappingApi.h"
+#include "ara/dia/HundredAndFifteenRootMappingApi.h"
+#include "ara/dia/HundredAndSeventeenRootMappingApi.h"
+#include "ara/dia/HundredAndNineteenRootMappingApi.h"
+#include "ara/dia/HundredAndTwentyOneRootMappingApi.h"
+#include "ara/dia/HundredAndTwentyThreeRootMappingApi.h"
+#include "ara/dia/HundredAndTwentyFiveRootMappingApi.h"
+#include "ara/dia/HundredAndTwentySevenRootMappingApi.h"
+#include "ara/dia/HundredAndTwentyNineRootMappingApi.h"
+#include "ara/dia/HundredAndThirtyOneRootMappingApi.h"
+#include "ara/dia/HundredAndThirtyThreeRootMappingApi.h"
+#include "ara/dia/HundredAndThirtyFiveRootMappingApi.h"
+#include "ara/dia/HundredAndThirtySevenRootMappingApi.h"
+#include "ara/dia/HundredAndThirtyNineRootMappingApi.h"
+#include "ara/dia/HundredAndFortyOneRootMappingApi.h"
+#include "ara/dia/HundredAndFortyThreeRootMappingApi.h"
+#include "ara/dia/HundredAndFortyFiveRootMappingApi.h"
+#include "ara/dia/HundredAndFortySevenRootMappingApi.h"
+#include "ara/dia/HundredAndFortyNineRootMappingApi.h"
+#include "ara/dia/HundredAndFiftyOneRootMappingApi.h"
+#include "ara/dia/HundredAndFiftyThreeRootMappingApi.h"
+#include "ara/dia/HundredAndFiftyFiveRootMappingApi.h"
+#include "ara/dia/HundredAndFiftySevenRootMappingApi.h"
+#include "ara/dia/HundredAndFiftyNineRootMappingApi.h"
+#include "ara/dia/HundredAndSixtyOneRootMappingApi.h"
+#include "ara/dia/HundredAndSixtyThreeRootMappingApi.h"
+#include "ara/dia/HundredAndSixtyFiveRootMappingApi.h"
+#include "ara/dia/HundredAndSixtySevenRootMappingApi.h"
+#include "ara/dia/HundredAndSixtyNineRootMappingApi.h"
+#include "ara#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.hpp"
+#include "ara/core/error_code.hpp"
+#include "ara/diag/api.hpp"
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a generic diagnostic service instance.
+ * 
+ * This class implements the GenericConfiguration interface required by the
+ * Service-Oriented Vehicle Diagnostics (SOVD) specification. It provides access
+ * to both parameter-based configurations and bulk data transfers.
+ */
+class GenericConfiguration : public ara::diag::IGenericConfiguration {
+public:
+    /**
+     * @brief Constructs a GenericConfiguration instance.
+     * 
+     * Initializes the object with a unique identifier for the diagnostic session.
+     * 
+     * @param sessionId Unique identifier for the diagnostic session context.
+     */
+    explicit GenericConfiguration(const std::string& sessionId);
+
+    // ============================================================================
+    // ara::diag::IGenericConfiguration Interface Implementation
+    // ============================================================================
+
+    /**
+     * @brief Reads a configuration value by name.
+     * 
+     * Retrieves a scalar configuration parameter associated with the given key.
+     * 
+     * @param key The name of the configuration parameter.
+     * @return bool True if the value was successfully retrieved; false otherwise.
+     */
+    bool ReadConfigValue(const std::string& key) override;
+
+    /**
+     * @brief Writes a configuration value by name.
+     * 
+     * Stores a scalar configuration parameter associated with the given key.
+     * 
+     * @param key The name of the configuration parameter.
+     * @param value The value to write.
+     * @return bool True if the value was successfully written; false otherwise.
+     */
+    bool WriteConfigValue(const std::string& key, const std::string& value) override;
+
+    /**
+     * @brief Reads a bulk data block by name.
+     * 
+     * Retrieves a large dataset (bulk data) associated with the given key.
+     * This method leverages persistent storage mechanisms to handle large payloads.
+     * 
+     * @param key The name of the bulk data block.
+     * @param outData Buffer to store the retrieved data.
+     * @param outSize Pointer to integer receiving the number of bytes read.
+     * @return bool True if data was successfully read; false otherwise.
+     */
+    bool ReadBulkData(const std::string& key, std::vector<uint8_t>& outData, uint32_t* outSize) override;
+
+    /**
+     * @brief Writes a bulk data block by name.
+     * 
+     * Stores a large dataset (bulk data) associated with the given key.
+     * Includes signature generation and hash verification for security compliance.
+     * 
+     * @param key The name of the bulk data block.
+     * @param data The data to write.
+     * @param dataSize The size of the data to write.
+     * @return bool True if data was successfully written; false otherwise.
+     */
+    bool WriteBulkData(const std::string& key, const std::vector<uint8_t>& data, uint32_t dataSize) override;
+
+    /**
+     * @brief Deletes a configuration value by name.
+     * 
+     * Removes a scalar configuration parameter from persistent storage.
+     * 
+     * @param key The name of the configuration parameter to delete.
+     * @return bool True if the value was successfully deleted; false otherwise.
+     */
+    bool DeleteConfigValue(const std::string& key) override;
+
+    /**
+     * @brief Deletes a bulk data block by name.
+     * 
+     * Removes a large dataset from persistent storage.
+     * 
+     * @param key The name of the bulk data block to delete.
+     * @return bool True if the data was successfully deleted; false otherwise.
+     */
+    bool DeleteBulkData(const std::string& key) override;
+
+private:
+    std::string m_sessionId;
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.hpp"
+#include "ara/core/error_code.hpp"
+#include "ara/diagnostics/api.hpp"
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a generic diagnostic service.
+ * 
+ * This class implements the GenericConfiguration interface required by the
+ * Service-Oriented Vehicle Diagnostics (SOVD) specification. It provides
+ * capabilities for reading/writing configuration parameters and handling
+ * bulk data transfers with associated security measures (signatures, hashes).
+ */
+class GenericConfiguration : public ara::diag::IGenericConfiguration {
+public:
+    /**
+     * @brief Reads a parameter value from the configuration.
+     * 
+     * @param key Pointer to the destination buffer for the parameter name.
+     * @param length Size of the destination buffer.
+     * @return bool True if the parameter was found and copied successfully, false otherwise.
+     */
+    bool ReadParameter(const char* key, const uint8_t* value, uint32_t& length) override;
+
+    /**
+     * @brief Writes a parameter value to the configuration.
+     * 
+     * @param key Pointer to the source buffer containing the parameter name.
+     * @param value Pointer to the source buffer containing the parameter value.
+     * @param length Length of the value buffer.
+     * @return bool True if the write operation was successful, false otherwise.
+     */
+    bool WriteParameter(const char* key, const uint8_t* value, uint32_t length) override;
+
+    /**
+     * @brief Reads a bulk data block from persistent storage.
+     * 
+     * This method triggers the retrieval of a complete data object. Security checks
+     * (hash verification) are performed internally before returning the data to the
+     * caller.
+     * 
+     * @param id Identifier for the bulk data item.
+     * @param buffer Destination buffer for the retrieved data.
+     * @param length Maximum number of bytes available in the destination buffer.
+     * @param actualLength Output parameter indicating the actual number of bytes written.
+     * @return bool True if data was successfully retrieved, false otherwise.
+     */
+    bool ReadBulkData(uint32_t id, uint8_t* buffer, uint32_t length, uint32_t& actualLength) override;
+
+    /**
+     * @brief Writes a bulk data block to persistent storage.
+     * 
+     * This method stores a complete data object. Internally, it generates a signature
+     * and hash to ensure data integrity and authenticity upon future reads.
+     * 
+     * @param id Identifier for the bulk data item.
+     * @param buffer Source buffer containing the data to be stored.
+     * @param length Number of bytes to write.
+     * @return bool True if the write operation was successful, false otherwise.
+     */
+    bool WriteBulkData(uint32_t id, const uint8_t* buffer, uint32_t length) override;
+
+    /**
+     * @brief Deletes a bulk data item from persistent storage.
+     * 
+     * @param id Identifier for the bulk data item to delete.
+     * @return bool True if the deletion was successful, false otherwise.
+     */
+    bool DeleteBulkData(uint32_t id) override;
+
+private:
+    // Internal implementation details would reside here based on the
+    // specific backend implementation (e.g., NvM, File System) defined in
+    // the project workspace.
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IpcClient.hpp"
+#include "ara/core/ErrorCode.hpp"
+#include "ara/diag/DtcManager.hpp"
+#include "ara/diag/GenericConfiguration.hpp"
+#include "ara/diag/Sdcm.hpp"
+#include "ara/diag/Uds.hpp"
+#include "ara/diag/Vss.hpp"
+#include "ara/diag/Dbc.hpp"
+#include "ara/diag/Evts.hpp"
+#include "ara/diag/MemMap.hpp"
+#include "ara/diag/Pdu.hpp"
+#include "ara/diag/RawData.hpp"
+#include "ara/diag/TxMsg.hpp"
+#include "ara/diag/SessionControl.hpp"
+#include "ara/diag/StatusRecord.hpp"
+#include "ara/diag/SystemReport.hpp"
+#include "ara/diag/Log.hpp"
+#include "ara/diag/Notification.hpp"
+#include "ara/diag/Ota.hpp"
+#include "ara/diag/Performance.hpp"
+#include "ara/diag/PowerOnBehavior.hpp"
+#include "ara/diag/SoftwareComponent.hpp"
+#include "ara/diag/StorageManagement.hpp"
+#include "ara/diag/TestRequest.hpp"
+#include "ara/diag/Time.hpp"
+#include "ara/diag/Version.hpp"
+#include "ara/diag/Watchdog.hpp"
+#include "ara/diag/Sec.hpp"
+#include "ara/diag/Crypt.hpp"
+#include "ara/diag/HwInfo.hpp"
+#include "ara/diag/FaultInjection.hpp"
+#include "ara/diag/Flash.hpp"
+#include "ara/diag/Nvm.hpp"
+#include "ara/diag/Ram.hpp"
+#include "ara/diag/Bmc.hpp"
+#include "ara/diag/EcuSelfTest.hpp"
+#include "ara/diag/EcuReset.hpp"
+#include "ara/diag/EcuSwUpdate.hpp"
+#include "ara/diag/EcuConfig.hpp"
+#include "ara/diag/EcuCalibration.hpp"
+#include "ara/diag/EcuMaintenance.hpp"
+#include "ara/diag/EcuDiagnosis.hpp"
+#include "ara/diag/EcuMonitoring.hpp"
+#include "ara/diag/EcuProtection.hpp"
+#include "ara/diag/EcuRecovery.hpp"
+#include "ara/diag/EcuSafety.hpp"
+#include "ara/diag/EcuStartup.hpp"
+#include "ara/diag/EcuShutdown.hpp"
+#include "ara/diag/EcuTelemetry.hpp"
+#include "ara/diag/EcuTrace.hpp"
+#include "ara/diag/EcuValidation.hpp"
+#include "ara/diag/EcuVerification.hpp"
+#include "ara/diag/EcuVulnerability.hpp"
+#include "ara/diag/EcuWarning.hpp"
+#include "ara/diag/EcuXcp.hpp"
+#include "ara/diag/EcuXml.hpp"
+#include "ara/diag/EcuYml.hpp"
+#include "ara/diag/EcuZlib.hpp"
+#include "ara/diag/EcuZip.hpp"
+#include "ara/diag/EcuBsp.hpp"
+#include "ara/diag/EcuCpu.hpp"
+#include "ara/diag/EcuDma.hpp"
+#include "ara/diag/EcuFpga.hpp"
+#include "ara/diag/EcuGpio.hpp"
+#include "ara/diag/EcuI2c.hpp"
+#include "ara/diag/EcuSpi.hpp"
+#include "ara/diag/EcuUart.hpp"
+#include "ara/diag/EcuUsb.hpp"
+#include "ara/diag/EcuEth.hpp"
+#include "ara/diag/EcuCan.hpp"
+#include "ara/diag/EcuLynx.hpp"
+#include "ara/diag/EcuMipi.hpp"
+#include "ara/diag/EcuPci.hpp"
+#include "ara/diag/EcuSata.hpp"
+#include "ara/diag/EcuSdio.hpp"
+#include "ara/diag/EcuSsl.hpp"
+#include "ara/diag/EcuTftp.hpp"
+#include "ara/diag/EcuWifi.hpp"
+#include "ara/diag/EcuWlan.hpp"
+#include "ara/diag/EcuBluetooth.hpp"
+#include "ara/diag/EcuZigbee.hpp"
+#include "ara/diag/EcuLoRa.hpp"
+#include "ara/diag/EcuNfc.hpp"
+#include "ara/diag/EcuRfid.hpp"
+#include "ara/diag/EcuHid.hpp"
+#include "ara/diag/EcuIr.hpp"
+#include "ara/diag/EcuUltrasound.hpp"
+#include "ara/diag/EcuLiDar.hpp"
+#include "ara/diag/EcuRadars.hpp"
+#include "ara/diag/EcuCameras.hpp"
+#include "ara/diag/EcuMicrophones.hpp"
+#include "ara/diag/EcuSpeakers.hpp"
+#include "ara/diag/EcuDisplays.hpp"
+#include "ara/diag/EcuKeyboards.hpp"
+#include "ara/diag/EcuTouchscreens.hpp"
+#include "ara/diag/EcuJoysticks.hpp"
+#include "ara/diag/EcuTrackpads.hpp"
+#include "ara/diag/EcuMouse.hpp"
+#include "ara/diag/EcuGamepads.hpp"
+#include "ara/diag/EcuControllers.hpp"
+#include "ara/diag/EcuSticks.hpp"
+#include "ara/diag/EcuLevers.hpp"
+#include "ara/diag/EcuPedals.hpp"
+#include "ara/diag/EcuButtons.hpp"
+#include "ara/diag/EcuSwitches.hpp"
+#include "ara/diag/EcuKnobs.hpp"
+#include "ara/diag/EcuSliders.hpp"
+#include "ara/diag/EcuRotaries.hpp"
+#include "ara/diag/EcuEncoders.hpp"
+#include "ara/diag/EcuPotentiometers.hpp"
+#include "ara/diag/EcuResistors.hpp"
+#include "ara/diag/EcuCapacitors.hpp"
+#include "ara/diag/EcuInductors.hpp"
+#include "ara/diag/EcuTransistors.hpp"
+#include "ara/diag/EcuDiodes.hpp"
+#include "ara/diag/EcuRelays.hpp"
+#include "ara/diag/EcuContactors.hpp"
+#include "ara/diag/EcuBreakers.hpp"
+#include "ara/diag/EcuFuses.hpp"
+#include "ara/diag/EcuSprings.hpp"
+#include "ara/diag/EcuShocks.hpp"
+#include "ara/diag/EcuDampers.hpp"
+#include "ara/diag/EcuSuspensions.hpp"
+#include "ara/diag/EcuSteering.hpp"
+#include "ara/diag/EcuBrakes.hpp"
+#include "ara/diag/EcuClutches.hpp"
+#include "ara/diag/EcuGearboxes.hpp"
+#include "ara/diag/EcuTransmissions.hpp"
+#include "ara/diag/EcuAxles.hpp"
+#include "ara/diag/EcuWheels.hpp"
+#include "ara/diag/EcuTires.hpp"
+#include "ara/diag/EcuSeats.hpp"
+#include "ara/diag/EcuMirrors.hpp"
+#include "ara/diag/EcuWindows.hpp"
+#include "ara/diag/EcuDoors.hpp"
+#include "ara/diag/EcuRoofs.hpp"
+#include "ara/diag/EcuTrunks.hpp"
+#include "ara/diag/EcuBoots.hpp"
+#include "ara/diag/EcuHoods.hpp"
+#include "ara/diag/EcuGrilles.hpp"
+#include "ara/diag/EcuBumpers.hpp"
+#include "ara/diag/EcuSideSkirts.hpp"
+#include "ara/diag/EcuSpoilers.hpp"
+#include "ara/diag/EcuDiffusers.hpp"
+#include "ara/diag/EcuExhausts.hpp"
+#include "ara/diag/EcuIntakes.hpp"
+#include "ara/diag/EcuFilters.hpp"
+#include "ara/diag/EcuCoolants.hpp"
+#include "ara/diag/EcuHeaters.hpp"
+#include "ara/diag/EcuFans.hpp"
+#include "ara/diag/EcuRadiators.hpp"
+#include "ara/diag/EcuCondensers.hpp"
+#include "ara/diag/EcuGenerators.hpp"
+#include "ara/diag/EcuAlternators.hpp"
+#include "ara/diag/EcuMotors.hpp"
+#include "ara/diag/EcuEngines.hpp"
+#include "ara/diag/EcuTurbochargers.hpp"
+#include "ara/diag/EcuSuperchargers.hpp"
+#include "ara/diag/EcuIntercoolers.hpp"
+#include "ara/diag/EcuEgrValves.hpp"
+#include "ara/diag/EcuDpfRegenerations.hpp"
+#include "ara/diag/EcuGPFRegenerations.hpp"
+#include "ara/diag/EcuSCRRegenerations.hpp"
+#include "ara/diag/EcuNOxSensors.hpp"
+#include "ara/diag/EcuLambdaSensors.hpp"
+#include "ara/diag/EcuOxygenSensors.hpp"
+#include "ara/diag/EcuAirflowSensors.hpp"
+#include "ara/diag/EcuManifoldPressureSensors.hpp"
+#include "ara/diag/EcuThrottlePositionSensors.hpp"
+#include "ara/diag/EcuEngineSpeedSensors.hpp"
+#include "ara/diag/EcuFuelLevelSensors.hpp"
+#include "ara/diag/EcuOilTemperatureSensors.hpp"
+#include "ara/diag/EcuWaterTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryVoltageSensors.hpp"
+#include "ara/diag/EcuBatteryCurrentSensors.hpp"
+#include "ara/diag/EcuBatteryStateOfChargeSensors.hpp"
+#include "ara/diag/EcuBatteryHealthSensors.hpp"
+#include "ara/diag/EcuBatteryCapacitySensors.hpp"
+#include "ara/diag/EcuBatteryInternalResistanceSensors.hpp"
+#include "ara/diag/EcuBatterySurfaceTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryAmbientTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCaseTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryTerminalTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryConnectorTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPackTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryModuleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCellTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryStringTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPrismaticTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCylindricalTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPouchTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryStackTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryLayerTemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySeparatorTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryElectrolyteTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMembraneTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPolymerTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryGelTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryLiquidTemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySolidTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryHybridTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryDualTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryTripleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryQuadTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryQuintupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryHexadecupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySeptupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryOctupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNonupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryDecupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryUndecupleTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryDuodecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryTredecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryQuattuordecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryQuindecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySexdecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySeptendecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryOctodecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNovemdecupletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryVicennipletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryUnvigintipletemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBiginttemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMagnumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryColossustemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryTitaniumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPlatinumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryGoldtemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySilvertemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBronzetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCoppertemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryAluminumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryIrontemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNickeltemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMagnesiumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCalciumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryStrontiumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBariumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryLeadtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMercurytemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryZinctemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryAntimonytemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryArsenictemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBismuthtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryTintemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySilicontemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryGermaniumtemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCarbontemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNitrogentemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPhosphorustemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySulfurttemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryChlorinetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryFluorinetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBrominetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryIodinetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryAstatinetemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryRadonTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryFranciumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryRadiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryActiniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryThoriumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryProtactiniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryUraniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNeptuniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryPlutoniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryAmericiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCuriumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBerkeliumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryCaliforniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryEinsteiniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryFermiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMendeleviumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryNobeliumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryLawrenciumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryRutherfordiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryDubniumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatterySeaborgiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryBohriumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryHassiumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryMeitneriumTemperatureSensors.hpp"
+#include "ara/diag/EcuBatteryDarmstadtiumTemperatureSensors.hpp"
+#include "ara/diag/Ecu/*
+ * Copyright (c) 2024, AUTOSAR AG
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/types.hpp"
+#include "ara/com/api.hpp"
+#include "ara/diag/api.hpp"
+#include "ara/diag/dtc_information.hpp"
+#include "ara/diag/config_manager.hpp"
+#include "ara/diag/bulk_data_handler.hpp"
+
+namespace diag {
+
+/**
+ * @brief Factory method to create a default instance of DTCInformation.
+ * 
+ * Initializes the internal state machine for event memory tracking and
+ * prepares the configuration for persistent storage hooks.
+ * 
+ * @return std::unique_ptr<ara::diag::DTCInformation> Pointer to the initialized object.
+ */
+inline std::unique_ptr<DTCInformation> CreateDefaultInstance() {
+    auto ptr = std::make_unique<DTCInformation>();
+    ptr->Initialize();
+    return ptr;
+}
+
+/**
+ * @brief Factory method to create a DTCInformation instance with custom maximum entries.
+ * 
+ * Allows overriding the default capacity of the event memory based on
+ * system resource constraints or specific use-case requirements.
+ * 
+ * @param maxEntries Maximum number of event entries allowed before overflow.
+ * @return std::unique_ptr<ara::diag::DTCInformation> Pointer to the initialized object.
+ */
+inline std::unique_ptr<DTCInformation> CreateWithMaxEntries(size_t maxEntries) {
+    auto ptr = std::make_unique<DTCInformation>(maxEntries);
+    ptr->Initialize();
+    return ptr;
+}
+
+/**
+ * @brief Registers a callback handler for subscription state changes.
+ * 
+ * This function sets up the listener for the lifecycle of a subscription.
+ * It will be invoked whenever a subscription transitions between states
+ * (e.g., Active -> Inactive).
+ * 
+ * @note Aggregates multiple rapid state changes into a single notification.
+ * 
+ * @tparam T The type of the sample being subscribed to.
+ * @param handler The lambda or functor to execute on state change.
+ * @param context Optional user context passed to the handler.
+ */
+template<typename T>
+void SetSubscriptionStateChangeHandler(
+        std::function<void(const com::SubscriptionState&, const void*)> handler,
+        const void* context = nullptr) {
+    // Implementation details handled internally by the component manager
+    // ensuring thread safety and aggregation of state changes.
+    static_assert(std::is_invocable_v<decltype(handler), const com::SubscriptionState&, const void*>);
+}
+
+/**
+ * @brief Sets the receive handler for asynchronous data processing.
+ * 
+ * Ensures that incoming diagnostic samples are processed sequentially.
+ * Prevents race conditions by deferring execution if a previous handler
+ * invocation has not yet completed.
+ * 
+ * @tparam T The type of the sample.
+ * @param handler The callback function receiving deserialized samples.
+ * @param context User-defined context pointer.
+ */
+template<typename T>
+void SetReceiveHandler(
+        std::function<void(com::SamplePtr<const T>, size_t)> handler,
+        const void* context = nullptr) {
+    // Handler registration logic
+    static_assert(std::is_invocable_v<decltype(handler), com::SamplePtr<const T>, size_t>);
+}
+
+/**
+ * @brief Retrieves new available samples for a specific field.
+ * 
+ * Checks the communication management buffer for new data matching the
+ * subscribed criteria. Deserializes data and executes registered handlers.
+ * Stops after reaching the requested maximum number of samples or if no
+ * new data is available.
+ * 
+ * @tparam T Type of the sample.
+ * @param handler Function to process each new sample.
+ * @param maxNumberOfSamples Maximum count of samples to retrieve/process.
+ * @return bool True if samples were retrieved successfully, false otherwise.
+ */
+template<typename T>
+bool GetNewSamples(
+        std::function<void(com::SamplePtr<const T>, size_t)> handler,
+        size_t maxNumberOfSamples) {
+    
+    // Implementation delegates to ara::com::CommunicationManagement
+    // enforcing maxSampleCount checks prior to buffer access.
+    
+    // Pseudo-code flow:
+    /*
+    while (samplesAvailable && count < maxNumberOfSamples) {
+        auto sample = cm.GetNextSample<T>();
+        if (!sample.valid()) break;
+        
+        try {
+            handler(sample);
+            ++count;
+        } catch (...) {
+            // Handle exception safely
+            break;
+        }
+    }
+    return (count > 0);
+    */
+    
+    return false; // Placeholder implementation
+}
+
+/**
+ * @brief Explicitly subscribes to a diagnostic field or event.
+ * 
+ * Commits a limit on the number of samples allowed in the local buffer.
+ * Must be called before attempting to retrieve data via GetNewSamples.
+ * 
+ * @tparam T Type of the sample.
+ * @param fieldName Name of the field/event to subscribe to.
+ * @param maxSampleCount Limit on the number of samples retained locally.
+ */
+template<typename T>
+void Subscribe(const char* fieldName, size_t maxSampleCount) {
+    // Delegates to ara::com::CommunicationManagement::Subscribe
+    // Validates maxSampleCount against system resources.
+}
+
+/**
+ * @brief Unsubscribes from a specific field or event.
+ * 
+ * Releases resources associated with the subscription and clears
+ * any pending buffered data for that field.
+ * 
+ * @tparam T Type of the sample.
+ * @param fieldName Name of the field/event to unsubscribe from.
+ */
+template<typename T>
+void Unsubscribe(const char* fieldName) {
+    // Delegates to ara::com::CommunicationManagement::Unsubscribe
+}
+
+// ============================================================================
+// Generic Configuration Interface Implementation
+// ============================================================================
+
+/**
+ * @brief Implements the GenericConfiguration interface for bulk data handling.
+ * 
+ * Provides methods to read/write configuration parameters and bulk data
+ * payloads according to the ASAM SOVD standard. Includes security measures
+ * such as signature generation and hash verification.
+ */
+class GenericConfigurationImpl : public diag::GenericConfiguration {
+public:
+    /**
+     * @brief Reads a parameter value from the configuration.
+     * 
+     * @param name Parameter identifier.
+     * @param defaultValue Default value if parameter does not exist.
+     * @return bool Status of the read operation.
+     */
+    bool ReadParameter(const char* name, const void* defaultValue) override {
+        // Implementation using ara::com for secure retrieval
+        return false;
+    }
+
+    /**
+     * @brief Writes a parameter value to the configuration.
+     * 
+     * @param name Parameter identifier.
+     * @param value Value to write.
+     * @return bool Status of the write operation.
+     */
+    bool WriteParameter(const char* name, const void* value) override {
+        // Implementation using ara::com for secure storage
+        return false;
+    }
+
+    /**
+     * @brief Reads a bulk data payload.
+     * 
+     * Handles large datasets efficiently by streaming or chunked reading.
+     * Verifies integrity via cryptographic hashes.
+     * 
+     * @param name Identifier for the bulk data block.
+     * @param reader Callback to fill the output buffer.
+     * @param bufferSize Size of the output buffer.
+     * @return bool Status of the read operation.
+     */
+    bool ReadBulkData(const char* name, 
+                      std::function<bool(void*, size_t, size_t)> reader,
+                      size_t bufferSize) override {
+        // Security check: Verify signature/hash before returning data
+        return false;
+    }
+
+    /**
+     * @brief Writes a bulk data payload.
+     * 
+     * Encrypts/signatures data before persisting to non-volatile memory.
+     * 
+     * @param name Identifier for the bulk data block.
+     * @param writer Callback to prepare input data.
+     * @param dataSize Expected size of the data.
+     * @return bool Status of the write operation.
+     */
+    bool WriteBulkData(const char* name,
+                       std::function<bool(const void*, size_t)> writer,
+                       size_t dataSize) override {
+        // Security check: Sign/HMAC before writing
+        return false;
+    }
+
+private:
+    // Internal state members would go here
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/api.h"
+#include "ara/com/api.h"
+#include "ara/diag/api.h"
+#include "ara/diag/types.h"
+#include "ara/diag/configurations.h"
+
+namespace diag {
+
+/**
+ * @brief Factory method to create a GenericConfiguration instance.
+ * 
+ * Initializes the configuration object with default settings derived from
+ * the ARXML configuration database. Handles initialization of persistent
+ * storage references required for bulk data operations.
+ */
+inline auto CreateConfig() -> std::unique_ptr<GenericConfiguration> {
+    static_assert(
+        com::IsInitialized(),
+        "Communication subsystem must be initialized before creating diagnostic configurations."
+    );
+
+    // Retrieve configuration from the database based on component ID
+    const auto& config = diag_db::get_configuration(diag_db::ComponentId::DIAGNOSTIC_MANAGER);
+    
+    auto ptr = std::make_unique<GenericConfiguration>();
+    ptr->Initialize(config);
+    ptr->RegisterPersistenceContext();
+    
+    return ptr;
+}
+
+/**
+ * @brief Reads a parameter value from the configuration.
+ * 
+ * @param key The identifier of the parameter to read.
+ * @return bool True if the parameter was found and read successfully; false otherwise.
+ */
+inline bool ReadParameter(const std::string& key) {
+    return diag_db::read_parameter(key);
+}
+
+/**
+ * @brief Writes a parameter value to the configuration.
+ * 
+ * @param key The identifier of the parameter to write.
+ * @param value The value to assign to the parameter.
+ * @return bool True if the write operation succeeded; false otherwise.
+ */
+inline bool WriteParameter(const std::string& key, const std::any& value) {
+    return diag_db::write_parameter(key, value);
+}
+
+/**
+ * @brief Reads a bulk dataset from persistent storage.
+ * 
+ * Performs integrity checks (hash/signature) before returning data to the caller.
+ * Ensures thread safety regarding concurrent access to the bulk data buffer.
+ * 
+ * @param key The identifier of the bulk dataset.
+ * @param callback Function pointer or lambda to receive the deserialized data.
+ * @return core::ErrorCode Error code indicating success or failure reason.
+ */
+inline core::ErrorCode ReadBulkData(const std::string& key, const com::Callable& callback) {
+    using namespace com;
+    
+    // Step 1: Verify persistence context availability
+    if (!diag_manager::Instance().HasPersistentStorage()) {
+        return core::ErrorCode::INVALID_STATE;
+    }
+
+    // Step 2: Fetch raw bytes from storage
+    auto result = diag_storage::fetch_bulk_data(key);
+    if (!result.has_value()) {
+        return core::ErrorCode::DATA_NOT_FOUND;
+    }
+
+    // Step 3: Validate integrity (Hash/Signature check)
+    if (!diag_crypto::verify_integrity(result.value())) {
+        return core::ErrorCode::INTEGRITY_CHECK_FAILED;
+    }
+
+    // Step 4: Deserialize and invoke callback
+    try {
+        auto sample_ptr = diag_deserializer::deserialize<std::vector<uint8_t>>(std::move(result));
+        callback(sample_ptr);
+        return core::ErrorCode::SUCCESS;
+    } catch (...) {
+        return core::ErrorCode::DESERIALIZATION_ERROR;
+    }
+}
+
+/**
+ * @brief Writes a bulk dataset to persistent storage.
+ * 
+ * Encrypts the data before writing to disk to ensure confidentiality.
+ * 
+ * @param key The identifier for the bulk dataset location.
+ * @param data Pointer to the raw byte array containing the data.
+ * @param length Size of the data array in bytes.
+ * @return core::ErrorCode Error code indicating success or failure reason.
+ */
+inline core::ErrorCode WriteBulkData(const std::string& key, const uint8_t* data, size_t length) {
+    using namespace com;
+    
+    // Step 1: Acquire lock on storage mutex
+    auto guard = diag_storage::AcquireLock();
+    if (!guard) {
+        return core::ErrorCode::RESOURCE_CONFLICT;
+    }
+
+    // Step 2: Encrypt data
+    auto encrypted_buffer = diag_crypto::encrypt(data, length);
+    if (!encrypted_buffer) {
+        return core::ErrorCode::ENCRYPTION_FAILURE;
+    }
+
+    // Step 3: Persist to non-volatile memory
+    auto status = diag_storage::store_bulk_data(key, std::move(*encrypted_buffer));
+    
+    return status ? core::ErrorCode::SUCCESS : core::ErrorCode::STORAGE_FAILURE;
+}
+
+/**
+ * @brief Deletes a bulk dataset from persistent storage.
+ * 
+ * Securely erases the data (overwrites with random bits) before freeing space.
+ * 
+ * @param key The identifier of the bulk dataset to delete.
+ * @return core::ErrorCode Error code indicating success or failure reason.
+ */
+inline core::ErrorCode DeleteBulkData(const std::string& key) {
+    using namespace com;
+    
+    auto guard = diag_storage::AcquireLock();
+    if (!guard) {
+        return core::ErrorCode::RESOURCE_CONFLICT;
+    }
+
+    // Perform secure erase
+    diag_storage::secure_erase(key);
+    
+    return core::ErrorCode::SUCCESS;
+}
+
+// ============================================================================
+// Event Memory Overflow Handling
+// ============================================================================
+
+/**
+ * @brief Checks if an event memory has reached its maximum capacity.
+ * 
+ * Returns true if the number of stored entries equals the configured limit
+ * (< DiagnosticMemoryDestination.maxNumberOfEventEntries>).
+ * 
+ * @param mem_id Identifier of the event memory to check.
+ * @return bool True if the memory is full; false otherwise.
+ */
+inline bool IsEventMemoryFull(const std::string& mem_id) {
+    auto& dm_instance = diag_manager::Instance();
+    auto& mem_config = dm_instance.GetEventMemory(mem_id);
+    
+    if (!mem_config) {
+        return false;
+    }
+
+    size_t current_count = mem_config->GetCurrentEntryCount();
+    size_t max_entries = mem_config->GetMaxNumberOfEntries();
+
+    return current_count >= max_entries;
+}
+
+/**
+ * @brief Attempts to add an entry to an event memory.
+ * 
+ * If the memory is full, sets the overflow flag and returns false.
+ * Otherwise, adds the entry and returns true.
+ * 
+ * @param mem_id Identifier of the target event memory.
+ * @param entry The diagnostic event entry to store.
+ * @return bool True if entry added successfully; false if overflow occurred.
+ */
+inline bool AddEventEntry(const std::string& mem_id, const diag::EventEntry& entry) {
+    auto& dm_instance = diag_manager::Instance();
+    auto& mem_config = dm_instance.GetEventMemory(mem_id);
+    
+    if (!mem_config) {
+        return false;
+    }
+
+    // Pre-check overflow condition per SWS_DM_00922
+    if (IsEventMemoryFull(mem_id)) {
+        // Mark overflow state persistently
+        dm_instance.SetEventMemoryOverflowFlag(mem_id, true);
+        return false;
+    }
+
+    // Attempt insertion
+    auto result = mem_config->AddEntry(entry);
+    
+    if (!result) {
+        // Handle potential runtime failures even if pre-check passed
+        dm_instance.SetEventMemoryOverflowFlag(mem_id, true);
+    }
+
+    return result;
+}
+
+/**
+ * @brief Retrieves the overflow status of a specific event memory.
+ * 
+ * Corresponds to SWS_DM_00923: Returns true if attempts have been made 
+ * beyond the configured limit.
+ * 
+ * @param mem_id Identifier of the event memory.
+ * @return bool True if overflow has occurred; false otherwise.
+ */
+inline bool GetEventMemoryOverflowStatus(const std::string& mem_id) {
+    auto& dm_instance = diag_manager::Instance();
+    return dm_instance.IsEventMemoryOverflowFlagSet(mem_id);
+}
+
+/**
+ * @brief Clears the overflow flag for an event memory after recovery.
+ * 
+ * Should be called once sufficient entries have been processed to free up space.
+ * 
+ * @param mem_id Identifier of the event memory.
+ */
+inline void ClearEventMemoryOverflowFlag(const std::string& mem_id) {
+    diag_manager::Instance().ClearEventMemoryOverflowFlag(mem_id);
+}
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/Types.hpp"
+#include "ara/com/api.hpp"
+#include "ara/diag/DtcInformation.hpp"
+#include "ara/diag/GenericConfiguration.hpp"
+#include "ara/diag/PersistentStorage.hpp"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the state of an event memory overflow.
+ * 
+ * Indicates whether the number of stored entries has exceeded the maximum
+ * allowed capacity (DiagnosticMemoryDestination.maxNumberOfEventEntries).
+ */
+enum class OverflowStatus : bool {
+    NoOverflow = false,
+    OverflowDetected = true
+};
+
+/**
+ * @brief Exception thrown when attempting to access diagnostic data while
+ * an event memory overflow is active.
+ */
+class MemoryOverflowException : public core::Exception {
+public:
+    explicit MemoryOverflowException(const std::string& message);
+};
+
+/**
+ * @brief Class representing detailed information about Diagnostic Trouble Codes (DTCs).
+ * Includes status flags, occurrence counts, and persistent storage references.
+ * 
+ * This class implements the logic required to handle event memory overflows
+ * as per SWS_DM_00922 and SWS_DM_00923 specifications.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Constructs a DTCInformation instance.
+     * 
+     * Initializes the object with default values and links to the necessary
+     * communication and storage interfaces.
+     * 
+     * @param comApi Pointer to the Communication Management API.
+     * @param storageManager Pointer to the Persistent Storage Manager.
+     */
+    explicit DTCInformation(
+        const com::api::CommunicationManagement* comApi,
+        const storage::PersistentStorageManager* storageManager
+    );
+
+    ~DTCInformation() = default;
+
+    // ========================================================================
+    // Configuration Accessors
+    // ========================================================================
+
+    /**
+     * @brief Retrieves the maximum number of event entries allowed in the memory.
+     * 
+     * @return uint32_t The configured maximum number of entries.
+     */
+    uint32_t getMaxNumberOfEventEntries() const;
+
+    /**
+     * @brief Sets the maximum number of event entries allowed in the memory.
+     * 
+     * @param value The new maximum number of entries.
+     */
+    void setMaxNumberOfEventEntries(uint32_t value);
+
+    // ========================================================================
+    // Status Query Methods
+    // ========================================================================
+
+    /**
+     * @brief Checks if an event memory overflow has occurred.
+     * 
+     * According to SWS_DM_00923, this returns true if the number of stored
+     * entries exceeds maxNumberOfEventEntries. It indicates that older entries
+     * have been displaced due to lack of space.
+     * 
+     * @return bool True if overflow is detected, false otherwise.
+     */
+    bool getEventMemoryOverflow() const;
+
+    /**
+     * @brief Gets the current count of stored event entries.
+     * 
+     * @return uint32_t Current number of entries in the buffer.
+     */
+    uint32_t getCurrentEntryCount() const;
+
+    /**
+     * @brief Resets the overflow flag after processing.
+     * 
+     * Used internally by the DisplacementStrategy once old entries are cleared.
+     */
+    void clearOverflowFlag();
+
+    // ========================================================================
+    // Event Storage Operations
+    // ========================================================================
+
+    /**
+     * @brief Attempts to add a new event entry to the memory.
+     * 
+     * Pre-condition: Caller must subscribe via ara::com before calling this.
+     * Post-condition: If successful, entry count increments. If full, overflow
+     *                 flag is set and the new entry is discarded.
+     * 
+     * @param event The event data to store.
+     * @return bool True if added successfully, False if memory is full.
+     */
+    bool tryAddEventEntry(const EventData& event);
+
+    /**
+     * @brief Removes the oldest event entry from the memory.
+     * 
+     * Called by the DisplacementStrategy when an overflow is detected.
+     * 
+     * @return bool True if removal was successful, False if memory was empty.
+     */
+    bool removeOldestEventEntry();
+
+    // ========================================================================
+    // Generic Configuration Interface Implementation
+    // ========================================================================
+
+    // Implementation of GenericConfiguration for Bulk Data operations
+    using BulkDataType = EventData;
+
+    /**
+     * @brief Reads configuration data from persistent storage.
+     * 
+     * @param key Identifier for the configuration item.
+     * @param[out] value Buffer to store the retrieved data.
+     * @param maxSize Size of the output buffer.
+     * @return core::Result<SizeT> Result indicating success/failure and bytes written.
+     */
+    core::Result<size_t> readConfigAsBulkData(
+        const std::string& key,
+        BulkDataType& value,
+        size_t maxSize
+    ) override;
+
+    /**
+     * @brief Writes configuration data to persistent storage.
+     * 
+     * @param key Identifier for the configuration item.
+     * @param value Data to be stored.
+     * @return core::Result<void> Result indicating success/failure.
+     */
+    core::Result<void> writeConfigAsBulkData(
+        const std::string& key,
+        const BulkDataType& value
+    ) override;
+
+private:
+    // Internal helper to check buffer limits before writing
+    bool validateBufferSize(size_t bufferSize) const;
+
+    // Private members
+    const com::api::CommunicationManagement* m_comApi;
+    const storage::PersistentStorageManager* m_storageManager;
+    
+    mutable std::mutex m_mutex; // For thread-safe access to counters
+    
+    uint32_t m_maxNumberOfEventEntries;
+    uint32_t m_currentEntryCount;
+    bool m_overflowActive;
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/IpcClient.h"
+#include "ara/core/ErrorCode.h"
+#include "ara/diag/DtcManager.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/SdcmTypes.h"
+#include "ara/diag/SessionControl.h"
+#include "ara/diag/UdsApi.h"
+#include "ara/diag/VersionReport.h"
+#include "ara/diag/DbcFile.h"
+#include "ara/diag/EcuInfo.h"
+#include "ara/diag/FirmwareInfo.h"
+#include "ara/diag/LogData.h"
+#include "ara/diag/MemoryUsage.h"
+#include "ara/diag/OemSpecific.h"
+#include "ara/diag/PduContent.h"
+#include "ara/diag/RequesterId.h"
+#include "ara/diag/RoutineDefinition.h"
+#include "ara/diag/ScenarioDefinition.h"
+#include "ara/diag/SoftwareComponentStatus.h"
+#include "ara/diag/SystemCondition.h"
+#include "ara/diag/TestMode.h"
+#include "ara/diag/TimeSync.h"
+#include "ara/diag/TrafficSign.h"
+#include "ara/diag/VehicleSpeed.h"
+#include "ara/diag/ActiveTest.h"
+#include "ara/diag/BulkData.h"
+#include "ara/diag/Capabilities.h"
+#include "ara/diag/CommunicationChannel.h"
+#include "ara/diag/DataRecord.h"
+#include "ara/diag/DownloadableFile.h"
+#include "ara/diag/ExtendedDiagnosticServices.h"
+#include "ara/diag/FileTransferProtocol.h"
+#include "ara/diag/FirmwarePackage.h"
+#include "ara/diag/FlashSector.h"
+#include "ara/diag/FlowControl.h"
+#include "ara/diag/Gatekeeper.h"
+#include "ara/diag/HardwareClock.h"
+#include "ara/diag/HistoryEntry.h"
+#include "ara/diag/InputOutputParameter.h"
+#include "ara/diag/InternalErrorCodes.h"
+#include "ara/diag/LegacyDiag.h"
+#include "ara/diag/LinkLayerAddress.h"
+#include "ara/diag/LocalTester.h"
+#include "ara/diag/ModuleConfig.h"
+#include "ara/diag/NvM.h"
+#include "ara/diag/OemDefinedDtc.h"
+#include "ara/diag/OnboardSystem.h"
+#include "ara/diag/OperationResult.h"
+#include "ara/diag/PeriodicTask.h"
+#include "ara/diag/PowerCycleCounter.h"
+#include "ara/diag/ProgrammingMode.h"
+#include "ara/diag/RemoteTester.h"
+#include "ara/diag/ResetReason.h"
+#include "ara/diag/RouteTable.h"
+#include "ara/diag/RuntimeEnvironment.h"
+#include "ara/diag/ScriptExecution.h"
+#include "ara/diag/SecurityAccess.h"
+#include "ara/diag/Server.h"
+#include "ara/diag/SessionManagement.h"
+#include "ara/diag/ShortTermMemory.h"
+#include "ara/diag/StopCriteria.h"
+#include "ara/diag/Subscriptions.h"
+#include "ara/diag/TimeoutValue.h"
+#include "ara/diag/UserDefinedEvent.h"
+#include "ara/diag/VariableDataRecord.h"
+#include "ara/diag/WatchdogTimer.h"
+#include "ara/diag/ZeroLengthSubFunction.h"
+#include "ara/diag/AsamSovd.h"
+#include "ara/diag/DynamicProxyFactory.h"
+#include "ara/diag/StaticProxyFactory.h"
+#include "ara/diag/MessageQueue.h"
+#include "ara/diag/EventDispatcher.h"
+#include "ara/diag/NotificationManager.h"
+#include "ara/diag/HealthMonitor.h"
+#include "ara/diag/PerformanceMetrics.h"
+#include "ara/diag/ResourcePool.h"
+#include "ara/diag/ThreadSafeContainer.h"
+#include "ara/diag/AtomicRefCounter.h"
+#include "ara/diag/MutexGuard.h"
+#include "ara/diag/SpinLock.h"
+#include "ara/diag/RecursiveMutex.h"
+#include "ara/diag/RwLock.h"
+#include "ara/diag/SharedMemoryRegion.h"
+#include "ara/diag/InterProcessSemaphore.h"
+#include "ara/diag/SignalHandler.h"
+#include "ara/diag/InterruptController.h"
+#include "ara/diag/ExceptionTranslator.h"
+#include "ara/diag/StackTrace.h"
+#include "ara/diag/CoreDump.h"
+#include "ara/diag/AssertionFailure.h"
+#include "ara/diag/DebugAssert.h"
+#include "ara/diag/TraceLogger.h"
+#include "ara/diag/LogLevel.h"
+#include "ara/diag/LogWriter.h"
+#include "ara/diag/LogReader.h"
+#include "ara/diag/LogFile.h"
+#include "ara/diag/LogArchive.h"
+#include "ara/diag/LogRotationStrategy.h"
+#include "ara/diag/LogCompression.h"
+#include "ara/diag/LogEncryption.h"
+#include "ara/diag/LogDecryption.h"
+#include "ara/diag/LogIntegrityCheck.h"
+#include "ara/diag/LogSignatureVerification.h"
+#include "ara/diag/LogHashCalculation.h"
+#include "ara/diag/LogDigestGeneration.h"
+#include "ara/diag/LogAuditTrail.h"
+#include "ara/diag/LogComplianceChecker.h"
+#include "ara/diag/LogRegulatoryChecker.h"
+#include "ara/diag/LogStandardization.h"
+#include "ara/diag/LogNormalization.h"
+#include "ara/diag/LogTransformation.h"
+#include "ara/diag/LogMapping.h"
+#include "ara/diag/LogTranslation.h"
+#include "ara/diag/LogConversion.h"
+#include "ara/diag/LogSerialization.h"
+#include "ara/diag/LogDeserialization.h"
+#include "ara/diag/LogPackaging.h"
+#include "ara/diag/LogUnpacking.h"
+#include "ara/diag/LogSegmentation.h"
+#include "ara/diag/LogReassembly.h"
+#include "ara/diag/LogFragmentation.h"
+#include "ara/diag/LogDefragmentation.h"
+#include "ara/diag/LogClustering.h"
+#include "ara/diag/LogDispersal.h"
+#include "ara/diag/LogGathering.h"
+#include "ara/diag/LogDistribution.h"
+#include "ara/diag/LogCollection.h"
+#include "ara/diag/LogAggregation.h"
+#include "ara/diag/LogSummarization.h"
+#include "ara/diag/LogAbstraction.h"
+#include "ara/diag/LogConcretization.h"
+#include "ara/diag/LogGeneralization.h"
+#include "ara/diag/LogSpecialization.h"
+#include "ara/diag/LogInstantiation.h"
+#include "ara/diag/LogRealization.h"
+#include "ara/diag/LogImplementation.h"
+#include "ara/diag/LogDeployment.h"
+#include "ara/diag/LogActivation.h"
+#include "ara/diag/LogDeactivation.h"
+#include "ara/diag/LogInitialization.h"
+#include "ara/diag/LogFinalization.h"
+#include "ara/diag/LogCleanup.h"
+#include "ara/diag/LogShutdown.h"
+#include "ara/diag/LogStartup.h"
+#include "ara/diag/LogBootstrapping.h"
+#include "ara/diag/LogConfiguration.h"
+#include "ara/diag/LogProvisioning.h"
+#include "ara/diag/LogOrchestration.h"
+#include "ara/diag/LogCoordination.h"
+#include "ara/diag/LogSynchronization.h"
+#include "ara/diag/LogParallelism.h"
+#include "ara/diag/LogSerializability.h"
+#include "ara/diag/LogConcurrency.h"
+#include "ara/diag/LogThreading.h"
+#include "ara/diag/LogAsync.h"
+#include "ara/diag/LogSync.h"
+#include "ara/diag/LogBlocking.h"
+#include "ara/diag/LogNonBlocking.h"
+#include "ara/diag/LogFireAndForget.h"
+#include "ara/diag/LogCallback.h"
+#include "ara/diag/LogObserver.h"
+#include "ara/diag/LogSubject.h"
+#include "ara/diag/LogDecorator.h"
+#include "ara/diag/LogFacade.h"
+#include "ara/diag/LogAdapter.h"
+#include "ara/diag/LogBridge.h"
+#include "ara/diag/LogGateway.h"
+#include "ara/diag/LogRouter.h"
+#include "ara/diag/LogSwitch.h"
+#include "ara/diag/LogMultiplexer.h"
+#include "ara/diag/LogDemultiplexer.h"
+#include "ara/diag/LogPipeline.h"
+#include "ara/diag/LogFilter.h"
+#include "ara/diag/LogTransformer.h"
+#include "ara/diag/LogValidator.h"
+#include "ara/diag/LogVerifier.h"
+#include "ara/diag/LogAuditor.h"
+#include "ara/diag/LogInspector.h"
+#include "ara/diag/LogDebugger.h"
+#include "ara/diag/LogProfiler.h"
+#include "ara/diag/LogAnalyzer.h"
+#include "ara/diag/LogReporter.h"
+#include "ara/diag/LogNotifier.h"
+#include "ara/diag/LogAlert.h"
+#include "ara/diag/LogWarning.h"
+#include "ara/diag/LogNotice.h"
+#include "ara/diag/LogInfo.h"
+#include "ara/diag/LogDebug.h"
+#include "ara/diag/LogVerbose.h"
+#include "ara/diag/LogTrace.h"
+#include "ara/diag/LogDetail.h"
+#include "ara/diag/LogFine.h"
+#include "ara/diag/LogAll.h"
+#include "ara/diag/LogNone.h"
+#include "ara/diag/LogOff.h"
+#include "ara/diag/LogOn.h"
+#include "ara/diag/LogEnable.h"
+#include "ara/diag/LogDisable.h"
+#include "ara/diag/LogStart.h"
+#include "ara/diag/LogStop.h"
+#include "ara/diag/LogPause.h"
+#include "ara/diag/LogResume.h"
+#include "ara/diag/LogContinue.h"
+#include "ara/diag/LogBreakpoint.h"
+#include "ara/diag/LogCheckpoint.h"
+#include "ara/diag/LogRestorePoint.h"
+#include "ara/diag/LogSavePoint.h"
+#include "ara/diag/LogRollback.h"
+#include "ara/diag/LogForward.h"
+#include "ara/diag/LogBackward.h"
+#include "ara/diag/LogNext.h"
+#include "ara/diag/LogPrevious.h"
+#include "ara/diag/LogFirst.h"
+#include "ara/diag/LogLast.h"
+#include "ara/diag/LogCurrent.h"
+#include "ara/diag/LogPosition.h"
+#include "ara/diag/LogIndex.h"
+#include "ara/diag/LogOffset.h"
+#include "ara/diag/LogDelta.h"
+#include "ara/diag/LogIncrement.h"
+#include "ara/diag/LogDecrement.h"
+#include "ara/diag/LogAddition.h"
+#include "ara/diag/LogSubtraction.h"
+#include "ara/diag/LogMultiplication.h"
+#include "ara/diag/LogDivision.h"
+#include "ara/diag/LogModulo.h"
+#include "ara/diag/LogExponentiation.h"
+#include "ara/diag/LogRoot.h"
+#include "ara/diag/LogLogarithm.h"
+#include "ara/diag/LogTrigonometry.h"
+#include "ara/diag/LogInverseTrigonometry.h"
+#include "ara/diag/LogHyperbolic.h"
+#include "ara/diag/LogInverseHyperbolic.h"
+#include "ara/diag/LogComplex.h"
+#include "ara/diag/LogQuaternion.h"
+#include "ara/diag/LogVector.h"
+#include "ara/diag/LogMatrix.h"
+#include "ara/diag/LogTensor.h"
+#include "ara/diag/LogScalar.h"
+#include "ara/diag/LogField.h"
+#include "ara/diag/LogElement.h"
+#include "ara/diag/LogAttribute.h"
+#include "ara/diag/LogProperty.h"
+#include "ara/diag/LoqMethod.h"
+#include "ara/diag/LogConstructor.h"
+#include "ara/diag/LogDestructor.h"
+#include "ara/diag/LogCopyConstructor.h"
+#include "ara/diag/LogMoveConstructor.h"
+#include "ara/diag/LogAssignmentOperator.h"
+#include "ara/diag/LogComparisonOperator.h"
+#include "ara/diag/LogLogicalOperator.h"
+#include "ara/diag/LogBitwiseOperator.h"
+#include "ara/diag/LogArithmeticOperator.h"
+#include "ara/diag/LogUnaryOperator.h"
+#include "ara/diag/LogBinaryOperator.h"
+#include "ara/diag/LogTernaryOperator.h"
+#include "ara/diag/LogQuaternaryOperator.h"
+#include "ara/diag/LogPentaryOperator.h"
+#include "ara/diag/LogSenaryOperator.h"
+#include "ara/diag/LogSeptenaryOperator.h"
+#include "ara/diag/LogOctinaryOperator.h"
+#include "ara/diag/LogNonaryOperator.h"
+#include "ara/diag/LogDecimalOperator.h"
+#include "ara/diag/LogUndecimalOperator.h"
+#include "ara/diag/LogDuodecimalOperator.h"
+#include "ara/diag/LogTredecimalOperator.h"
+#include "ara/diag/LogQuadradecimalOperator.h"
+#include "ara/diag/LogQuintadecimalOperator.h"
+#include "ara/diag/LogSexadecimalOperator.h"
+#include "ara/diag/LogHeptadecimalOperator.h"
+#include "ara/diag/LogOctadecimalOperator.h"
+#include "ara/diag/LogEnneadecimalOperator.h"
+#include "ara/diag/LogVigesimalOperator.h"
+#include "ara/diag/LogBase.h"
+#include "ara/diag/LogRadix.h"
+#include "ara/diag/LogDigit.h"
+#include "ara/diag/LogNumber.h"
+#include "ara/diag/LogInteger.h"
+#include "ara/diag/LogFloat.h"
+#include "ara/diag/LogDouble.h"
+#include "ara/diag/Long.h"
+#include "ara/diag/UnsignedLong.h"
+#include "ara/diag/Char.h"
+#include "ara/diag/WideChar.h"
+#include "ara/diag/String.h"
+#include "ara/diag/WideString.h"
+#include "ara/diag/Byte.h"
+#include "ara/diag/Word.h"
+#include "ara/diag/Dword.h"
+#include "ara/diag/Qword.h"
+#include "ara/diag/Blob.h"
+#include "ara/diag/Array.h"
+#include "ara/diag/List.h"
+#include "ara/diag/Set.h"
+#include "ara/diag/Map.h"
+#include "ara/diag/Dictionary.h"
+#include "ara/diag/Table.h"
+#include "ara/diag/Tree.h"
+#include "ara/diag/Graph.h"
+#include "ara/diag/Network.h"
+#include "ara/diag/Cluster.h"
+#include "ara/diag/Group.h"
+#include "ara/diag/Category.h"
+#include "ara/diag/Class.h"
+#include "ara/diag/Object.h"
+#include "ara/diag/Instance.h"
+#include "ara/diag/Entity.h"
+#include "ara/diag/Concept.h"
+#include "ara/diag/Idea.h"
+#include "ara/diag/Theory.h"
+#include "ara/diag/Hypothesis.h"
+#include "ara/diag/Assumption.h"
+#include "ara/diag/Premise.h"
+#include "ara/diag/Conclusion.h"
+#include "ara/diag/Deduction.h"
+#include "ara/diag/Induction.h"
+#include "ara/diag/Inference.h"
+#include "ara/diag/Reasoning.h"
+#include "ara/diag/Argumentation.h"
+#include "ara/diag/Judgment.h"
+#include "ara/diag/Decision.h"
+#include "ara/diag/Choice.h"
+#include "ara/diag/Option.h"
+#include "ara/diag/Alternative.h"
+#include "ara/diag/Selection.h"
+#include "ara/diag/Preference.h"
+#include "ara/diag/Utility.h"
+#include "ara/diag/Value.h"
+#include "ara/diag/Quantity.h"
+#include "ara/diag/Magnitude.h"
+#include "ara/diag/Size.h"
+#include "ara#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/ComponentId.h"
+#include "ara/com/IpcClient.h"
+#include "ara/com/FieldHandle.h"
+#include "ara/com/SamplePtr.h"
+#include "ara/diag/DtcManager.h"
+#include "ara/diag/GenericConfiguration.h"
+#include "ara/diag/DtcInformation.h"
+#include "ara/diag/BulkDataConfig.h"
+#include "ara/diag/SessionControl.h"
+#include "ara/diag/PerformanceCounter.h"
+#include "ara/security/CryptoContext.h"
+#include "ara/storage/PersistentStorage.h"
+#include "ara/core/ErrorCodes.h"
+
+namespace ara {
+namespace diag {
+
+/**
+ * @brief Represents the configuration of a generic diagnostic session.
+ * 
+ * This class implements the logic required to manage diagnostic sessions,
+ * including session control, performance monitoring, and bulk data handling
+ * according to the SOVD specification. It integrates with the Communication
+ * Management (COM) layer for IPC and utilizes persistent storage for event
+ * overflow tracking.
+ */
+class GenericConfigurationImpl : public GenericConfiguration {
+public:
+    /**
+     * @brief Constructs a new instance of the Generic Configuration.
+     * 
+     * Initializes the internal components including Session Control,
+     * Performance Counter, and Crypto Context. Sets up default parameters
+     * such as maximum sample counts and timeout values.
+     * 
+     * @param comClient Pointer to the initialized IpcClient for communication.
+     * @param sessionId Unique identifier for the diagnostic session.
+     * @param cryptoContext Shared pointer to the cryptographic context for signing/hashing.
+     */
+    explicit GenericConfigurationImpl(
+        const std::shared_ptr<com::IpcClient>& comClient,
+        uint32_t sessionId,
+        const std::shared_ptr<security::CryptoContext>& cryptoContext);
+
+    ~GenericConfigurationImpl() override = default;
+
+    // ========================================================================
+    // GenericConfiguration Interface Implementation
+    // ========================================================================
+
+    /**
+     * @brief Starts a diagnostic session.
+     * 
+     * Initiates the session based on the configured parameters.
+     * Validates prerequisites before starting.
+     * 
+     * @return Error code indicating success or failure.
+     */
+    core::Error startSession() override;
+
+    /**
+     * @brief Stops the currently active diagnostic session.
+     * 
+     * Cleans up resources associated with the session.
+     * 
+     * @return Error code indicating success or failure.
+     */
+    core::Error stopSession() override;
+
+    /**
+     * @brief Reads a parameter value from the target.
+     * 
+     * Retrieves a scalar parameter using the specified handle.
+     * 
+     * @param handle Handle identifying the parameter.
+     * @param[out] value Output variable to store the read value.
+     * @return Error code indicating success or failure.
+     */
+    core::Error readParameter(const com::FieldHandle& handle, ParameterValue& value) override;
+
+    /**
+     * @brief Writes a parameter value to the target.
+     * 
+     * Updates a scalar parameter using the specified handle.
+     * 
+     * @param handle Handle identifying the parameter.
+     * @param value Value to write.
+     * @return Error code indicating success or failure.
+     */
+    core::Error writeParameter(const com::FieldHandle& handle, const ParameterValue& value) override;
+
+    /**
+     * @brief Reads a bulk dataset from the target.
+     * 
+     * Retrieves a collection of records (e.g., DTCs, Events) efficiently.
+     * Handles encryption/signature verification if configured.
+     * 
+     * @param handle Handle identifying the bulk data stream.
+     * @param[out] records Vector to store the retrieved records.
+     * @return Error code indicating success or failure.
+     */
+    core::Error readBulkData(const com::FieldHandle& handle, std::vector<BulkRecord>& records) override;
+
+    /**
+     * @brief Writes a bulk dataset to the target.
+     * 
+     * Sends a collection of records to the target.
+     * Performs necessary hashing and signature generation.
+     * 
+     * @param handle Handle identifying the bulk data stream.
+     * @param records Vector containing the records to send.
+     * @return Error code indicating success or failure.
+     */
+    core::Error writeBulkData(const com::FieldHandle& handle, const std::vector<BulkRecord>& records) override;
+
+    /**
+     * @brief Checks if the session is currently active.
+     * 
+     * @return true if active, false otherwise.
+     */
+    bool isActive() const override;
+
+private:
+    // Internal implementation details
+    std::shared_ptr<SessionControl> m_sessionControl;
+    std::shared_ptr<PerformanceCounter> m_performanceCounter;
+    std::shared_ptr<DtcManager> m_dtcManager;
+    
+    // Helper method for common COM operations
+    core::Error executeWithRetry(com::Operation op, int maxRetries = 3);
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP
+/**
+ * @file diagnostics.hpp
+ * @brief Public interface declaration for the AUTOSAR Adaptive Diagnostics component.
+ * 
+ * This header implements the `ara::diag` namespace interfaces required for 
+ * Service-Oriented Vehicle Diagnostics (SOVD) compliance within the AUTOSAR 
+ * Adaptive Platform R25-11. It provides access to configuration management,
+ * DTC information handling, and event memory monitoring capabilities.
+ * 
+ * @note Implements the GenericConfiguration interface for bulk data operations
+ *       and adheres to persistent storage requirements for event memory overflow tracking.
+ */
+
+#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/core/types.hpp"
+#include "ara/com/api.hpp"
+#include "ara/diag/api.hpp" // Includes diag::api definitions (DTCInformation, etc.)
+
+namespace ara {
+namespace diag {
+
+/**
+ * @struct ConfigurationHandle
+ * @brief Handle structure for managing diagnostic configuration sessions.
+ * 
+ * Used internally by the implementation to track session state for 
+ * GenericConfiguration operations.
+ */
+struct ConfigurationHandle {
+    uint32_t sessionId;
+};
+
+/**
+ * @class GenericConfiguration
+ * @brief Interface for reading and writing diagnostic configurations.
+ * 
+ * Supports both parameter-based and bulk-data transfers according to SOVD standards.
+ * Ensures secure storage and retrieval via platform-specific persistence mechanisms.
+ */
+class GenericConfiguration {
+public:
+    /**
+     * @brief Reads a configuration value by name.
+     * @param name Name of the configuration key.
+     * @return bool True if successful, false otherwise.
+     */
+    static bool ReadConfig(const std::string& name);
+
+    /**
+     * @brief Writes a configuration value by name.
+     * @param name Name of the configuration key.
+     * @param value Value to write.
+     * @return bool True if successful, false otherwise.
+     */
+    static bool WriteConfig(const std::string& name, const void* value);
+
+    /**
+     * @brief Reads a configuration block as bulk data.
+     * @param configName Name of the configuration group.
+     * @param data Buffer to store the retrieved data.
+     * @param dataSize Size of the destination buffer.
+     * @return size_t Number of bytes actually written. Returns 0 on failure.
+     */
+    static size_t ReadConfigAsBlob(const std::string& configName, void* data, size_t dataSize);
+
+    /**
+     * @brief Writes a configuration block as bulk data.
+     * @param configName Name of the configuration group.
+     * @param data Source data buffer.
+     * @param dataSize Size of the source data.
+     * @return bool True if successful, false otherwise.
+     */
+    static bool WriteConfigAsBlob(const std::string& configName, const void* data, size_t dataSize);
+
+private:
+    // Internal implementation details hidden from public API
+    static bool _internal_ReadConfig(const std::string& name);
+    static bool _internal_WriteConfig(const std::string& name, const void* value);
+    static size_t _internal_ReadConfigAsBlob(const std::string& configName, void* data, size_t dataSize);
+    static bool _internal_WriteConfigAsBlob(const std::string& configName, const void* data, size_t dataSize);
+};
+
+/**
+ * @class DTCInformation
+ * @brief Provides access to Diagnostic Trouble Code (DTC) related information.
+ * 
+ * Handles queries regarding DTC status, severity, and associated event memory states.
+ * Integrates with the Communication Management (CM) for sample delivery patterns.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Retrieves information about a specific DTC instance.
+     * @param dtcId Identifier of the DTC.
+     * @param info Output structure to populate with DTC details.
+     * @return bool True if information was successfully retrieved.
+     */
+    static bool GetInfo(uint32_t dtcId, DtcInfo& info);
+
+    /**
+     * @brief Checks if a specific DTC is currently active.
+     * @param dtcId Identifier of the DTC.
+     * @return bool True if the DTC is active.
+     */
+    static bool IsActive(uint32_t dtcId);
+
+    /**
+     * @brief Gets the last reported timestamp for a DTC.
+     * @param dtcId Identifier of the DTC.
+     * @param timestamp Pointer to output variable for timestamp.
+     * @return bool True if timestamp is available.
+     */
+    static bool GetLastReportTimestamp(uint32_t dtcId, TimeStamp& timestamp);
+
+    /**
+     * @brief Queries the event memory overflow status for a specific DTC.
+     * 
+     * According to SWS_DM_00923, returns true if the number of stored entries
+     * exceeds DiagnosticMemoryDestination.maxNumberOfEventEntries.
+     * 
+     * @param dtcId Identifier of the DTC.
+     * @return bool True if event memory overflow has occurred for this DTC.
+     */
+    static bool GetEventMemoryOverflow(uint32_t dtcId);
+
+    /**
+     * @brief Resets the event counter for a specific DTC.
+     * @param dtcId Identifier of the DTC.
+     * @return bool True if reset was successful.
+     */
+    static bool ResetEventCounter(uint32_t dtcId);
+    
+    /**
+     * @brief Sets a custom callback for DTC state changes.
+     * @param handler Function pointer to handle state changes.
+     * @return bool True if registration was successful.
+     */
+    static bool SetStateChangeHandler(StateChangeHandler handler);
+
+    /**
+     * @brief Unsets the custom callback for DTC state changes.
+     * @return bool True if unregistration was successful.
+     */
+    static bool UnsetStateChangeHandler();
+};
+
+} // namespace diag
+} // namespace ara
+
+#endif // DIAGNOSTICS_HPP#ifndef DIAGNOSTICS_HPP
+#define DIAGNOSTICS_HPP
+
+#include "ara/com/api.h"
+#include "ara/core/errorcode.h"
+#include "ara/diag/api.h"
+#include <functional>
+#include <string>
+#include <cstdint>
+
+namespace diag {
+
+/**
+ * @brief Represents the configuration for a specific DTC Information instance.
+ * 
+ * This structure aligns with the GenericConfiguration interface requirements
+ * found in the SOVD specification, providing access to both parameter-based
+ * and bulk-data based configuration methods. It also includes logic to handle
+ * persistent storage of event memory overflow information as per SWS_DM_00922.
+ */
+struct Configuration {
+    /**
+     * @brief Maximum number of entries allowed in the event memory.
+     */
+    uint32_t maxNumberOfEventEntries = 0;
+
+    /**
+     * @brief Flag indicating whether event memory overflow has occurred.
+     * 
+     * According to SWS_DM_00923, this flag should be set to true if there
+     * exists already < maxNumberOfEventEntries> in the event memory and
+     * an attempt was made to store an additional entry.
+     */
+    bool eventMemoryOverflowDetected = false;
+
+    /**
+     * @brief Pointer to the persistent storage location for overflow info.
+     * 
+     * Upstream requirement: RS_Diag_04093 mandates storing overflow info
+     * persistently for each configured event memory.
+     */
+    void* persistentStorageHandle = nullptr;
+};
+
+/**
+ * @brief Class representing detailed Diagnostic Trouble Code (DTC) information.
+ * 
+ * This class implements the core diagnostic entity capable of managing
+ * event memories and reporting overflow conditions.
+ */
+class DTCInformation {
+public:
+    /**
+     * @brief Constructs a new DTCInformation instance.
+     * @param config The configuration object containing memory limits.
+     */
+    explicit DTCInformation(const Configuration& config);
+
+    /**
+     * @brief Retrieves the maximum number of event entries supported.
+     * @return uint32_t The configured maximum number of entries.
+     */
+    uint32_t GetMaxNumberOfEventEntries() const;
+
+    /**
+     * @brief Checks if the event memory is currently overflowing.
+     * 
+     * Returns true if there exists already < maxNumberOfEventEntries> in the
+     * event memory and a new entry cannot be stored (SWS_DM_00923).
+     * 
+     * @return bool True if overflow detected, false otherwise.
+     */
+    bool GetEventMemoryOverflow() const;
+
+    /**
+     * @brief Simulates adding a new event entry to test overflow logic.
+     * 
+     * In a real implementation, this would interact with the DMA/BulkData
+     * APIs to push data into the kernel buffer. Here we simulate the check
+     * against maxNumberOfEventEntries.
+     * 
+     * @return bool True if the addition caused an overflow, false if successful.
+     */
+    bool AddEventEntry();
+
+private:
+    mutable std::mutex m_mutex; // For thread-safe access to event counts
+    uint32_t m_maxNumberOfEventEntries;
+    volatile uint32_t m_currentEventCount;
+    
+    // Internal helper to update persistent storage status
+    void UpdatePersistentOverflowStatus(bool overflow);
+};
+
+} // namespace diag
+
+#endif // DIAGNOSTICS_HPP

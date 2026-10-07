@@ -237,11 +237,15 @@ class AutosarSpecEngine:
         query: str,
         platform: Optional[str] = None,
         top_k: int = 5,
+        document_types: Optional[tuple[str, ...]] = None,
+        sources: Optional[tuple[str, ...]] = None,
+        refresh_index: bool = True,
     ) -> list[SpecExcerpt]:
-        """Return the best matching excerpts, with optional Classic/Adaptive filter."""
-        report = self.index_documents()
-        if report.errors:
-            print(f"[AUTOSAR spec index] {len(report.errors)} PDF(s) could not be indexed.")
+        """Return ranked excerpts with optional platform, type, and source filters."""
+        if refresh_index:
+            report = self.index_documents()
+            if report.errors:
+                print(f"[AUTOSAR spec index] {len(report.errors)} PDF(s) could not be indexed.")
 
         if platform:
             platform = platform.strip().lower()
@@ -250,8 +254,44 @@ class AutosarSpecEngine:
             if platform not in {"classic", "adaptive"}:
                 raise ValueError("platform must be 'classic', 'adaptive', or None")
 
+        if document_types:
+            document_types = tuple(dict.fromkeys(kind.strip().upper() for kind in document_types))
+            invalid_types = set(document_types) - {"EXP", "RS", "SWS", "TPS", "TR"}
+            if invalid_types:
+                raise ValueError("document_types may contain EXP, RS, SWS, TPS, or TR")
+
         fts_query = self._make_fts_query(query)
         limit = min(max(int(top_k), 1), 30)
+        conditions = [
+            "spec_fts MATCH ?",
+            "(? IS NULL OR documents.platform = ?)",
+        ]
+        parameters: list[object] = [fts_query, platform, platform]
+        if document_types:
+            type_conditions = " OR ".join(
+                "instr(upper(documents.file_path), ?) > 0" for _ in document_types
+            )
+            conditions.append(f"({type_conditions})")
+            parameters.extend(f"_{kind}_" for kind in document_types)
+
+        if sources:
+            normalized_sources = tuple(
+                dict.fromkeys(
+                    Path(source.replace("\\", "/")).as_posix().lstrip("./")
+                    for source in sources
+                    if source.strip()
+                )
+            )
+            if normalized_sources:
+                source_condition = (
+                    "lower(substr(replace(documents.file_path, char(92), '/'), -length(?))) = lower(?)"
+                )
+                conditions.append(
+                    "(" + " OR ".join(source_condition for _ in normalized_sources) + ")"
+                )
+                for source in normalized_sources:
+                    parameters.extend((source, source))
+        parameters.append(limit)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT chunks.file_path, documents.platform, documents.release, "
@@ -259,9 +299,9 @@ class AutosarSpecEngine:
                 "FROM spec_fts "
                 "JOIN chunks ON chunks.id = spec_fts.rowid "
                 "JOIN documents ON documents.file_path = chunks.file_path "
-                "WHERE spec_fts MATCH ? AND (? IS NULL OR documents.platform = ?) "
+                f"WHERE {' AND '.join(conditions)} "
                 "ORDER BY rank LIMIT ?",
-                (fts_query, platform, platform, limit),
+                parameters,
             ).fetchall()
 
         excerpts = []
@@ -285,9 +325,19 @@ class AutosarSpecEngine:
         platform: Optional[str] = None,
         top_k: int = 5,
         max_chars: int = 10000,
+        document_types: Optional[tuple[str, ...]] = None,
+        sources: Optional[tuple[str, ...]] = None,
+        refresh_index: bool = True,
     ) -> str:
         """Format retrieved excerpts for a model prompt with source citations."""
-        excerpts = self.search(query, platform=platform, top_k=top_k)
+        excerpts = self.search(
+            query,
+            platform=platform,
+            top_k=top_k,
+            document_types=document_types,
+            sources=sources,
+            refresh_index=refresh_index,
+        )
         if not excerpts:
             return "No matching AUTOSAR specification excerpts were found. Do not invent normative requirements."
 
